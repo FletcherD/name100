@@ -57,7 +57,7 @@ The builder streams a Wikidata entity dump and writes one immutable index artifa
 
 | Wikidata condition | Stored kind |
 | --- | --- |
-| `P31` includes `Q5` (human), `P21` includes `Q6581072` (female), `Q1052281` (trans woman) or `Q15145779` (cisgender woman) | `woman` (accepted) |
+| `P31` includes `Q5` (human), `P21` includes female (`Q6581072`), trans woman (`Q1052281`), cisgender woman (`Q15145779`), intersex woman (`Q121307100`) or intersex trans woman (`Q138806923`) | `woman` (accepted) |
 | `P31` includes `Q5`, any other or missing `P21` | `not_woman` |
 | `P31` includes a listed fictional class | `fictional` |
 
@@ -100,6 +100,7 @@ The list is defined once, in `crates/core/src/attribute.rs`. The manifest record
 
 **Artifact.** One directory, versioned by build date:
 
+- `names_fuzzy.fst`: the subset of names that typo correction may land on (a set, no values).
 - `names.fst`: normalized name → value. FST keys must be sorted and unique. Most names belong to one record, so the value encodes that record's index directly (top bit clear); shared names set the top bit and point into the posting list instead.
 - `postings.bin`: for each shared name, a list of record indices, ascending (which is most popular first; see below).
 - `records_hot.bin`: fixed-size 8-byte records holding only what matching needs: QID, sitelink count, and the stored kind.
@@ -118,7 +119,12 @@ Each lookup normalizes the input, then runs these stages in order and stops at t
 
 1. **Input guard.** Reject empty input, input over 100 characters, or input with no letters, as `not_a_name`.
 2. **Exact match** against all indexed labels and aliases. Get the posting list and apply the resolution rule below.
-3. **Fuzzy match**, only if there was no exact hit, using a Levenshtein automaton over the FST. Allowed edit distance depends on input length: 0 under 5 characters, 1 for 5–9, 2 for 10 or more. Take the candidates with the lowest distance, then apply the resolution rule. Set `corrected_from` in the response. Swapping two adjacent letters counts as one edit (`fuzzy_transpositions`, on by default), since swaps are the most common typing error.
+3. **Fuzzy match**, only if there was no exact hit, using a Levenshtein automaton. Three limits keep it honest:
+   - **One edit only**, and only for input of 5 characters or more (`fuzzy_min_len`). Swapping two adjacent letters counts as one edit (`fuzzy_transpositions`, on by default).
+   - **Only towards well-known people.** The search runs over `names_fuzzy.fst`, which holds just the names borne by someone with at least `fuzzy_min_sitelinks` Wikipedia articles (default 10, fixed when the index is built). Obscure people are still found when typed exactly.
+   - Each near name brings everyone who shares it, so the resolution rule still applies. Set `corrected_from` in the response.
+
+   Two edits over every name was tried first and dropped: on a 1.26-million-name index it took 2–3 ms per lookup, and "some woman" was accepted as a writer whose alias is "Swole Woman".
 4. **No match** → `not_found`.
 
 **Miss logging.** Every `not_found` and `ambiguous` verdict emits a structured `tracing` event with the normalized input. No database: a script over the logs ranks misses by frequency. That ranking is the evidence for deciding whether Phase 2 is needed.
@@ -179,7 +185,7 @@ Field values (the QID and sitelink count above are illustrative):
 **CLI** (`clap` subcommands of one binary):
 
 ```
-hundred build-index --dump <path> --out <dir> [--langs en,mul] [--min-sitelinks 1]
+hundred build-index --dump <path> --out <dir> [--langs en,mul] [--min-sitelinks 1] [--fuzzy-min-sitelinks 10]
 hundred serve --index <dir> [--config hundred.toml] [--bind 127.0.0.1:8080]
 hundred lookup "<name>" [--server http://127.0.0.1:8080] [--json]
 hundred lookup "<name>" --local --index <dir>      # in-process, no server
@@ -189,7 +195,7 @@ hundred lookup "<name>" --local --index <dir>      # in-process, no server
 
 ## Config, testing, and milestones
 
-**Config.** `hundred.toml` (read from the working directory, or `--config <file>`), every key overridable by a `HUNDRED_<KEY>` environment variable. Flags beat the environment, which beats the file. Keys: `index`, `bind`, `langs`, `min_sitelinks`, `dominance_ratio`, `mononym_min_sitelinks`, `fuzzy_one_edit_min_len`, `fuzzy_two_edits_min_len`, `fuzzy_transpositions`, `max_input_chars`, `max_candidates`. Unknown keys are an error. `hundred.example.toml` lists them with their defaults.
+**Config.** `hundred.toml` (read from the working directory, or `--config <file>`), every key overridable by a `HUNDRED_<KEY>` environment variable. Flags beat the environment, which beats the file. Keys: `index`, `bind`, `langs`, `min_sitelinks`, `dominance_ratio`, `mononym_min_sitelinks`, `fuzzy_min_sitelinks`, `fuzzy_min_len`, `fuzzy_transpositions`, `max_input_chars`, `max_candidates`. Unknown keys are an error. `hundred.example.toml` lists them with their defaults.
 
 **Observability.** `serve` writes JSON logs to stdout, including the miss events above (target `hundred::miss`, fields `reason` and `normalized`); `scripts/rank_misses.py` ranks them. `/metrics` exports `hundred_lookups_total` by `verdict`, `reason` and `matched_via`, and the histograms `hundred_lookup_seconds` and `hundred_lookup_stage_seconds` (by `stage`: guard, exact, fuzzy, resolve).
 

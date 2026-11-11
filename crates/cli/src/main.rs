@@ -41,6 +41,9 @@ enum Command {
         /// Minimum number of Wikipedia articles for a person to be kept [default: 1].
         #[arg(long)]
         min_sitelinks: Option<u32>,
+        /// Articles a person needs before a misspelling is corrected to them [default: 10].
+        #[arg(long)]
+        fuzzy_min_sitelinks: Option<u32>,
         /// Dump date (YYYY-MM-DD) for the manifest. Defaults to the date in the dump's filename.
         #[arg(long)]
         dump_date: Option<String>,
@@ -89,10 +92,11 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
-        Command::BuildIndex { dump, out, langs, min_sitelinks, dump_date } => {
+        Command::BuildIndex { dump, out, langs, min_sitelinks, fuzzy_min_sitelinks, dump_date } => {
             let options = BuildOptions {
                 langs: langs.unwrap_or_else(|| config.langs.clone()),
                 min_sitelinks: min_sitelinks.unwrap_or(config.min_sitelinks),
+                fuzzy_min_sitelinks: fuzzy_min_sitelinks.unwrap_or(config.fuzzy_min_sitelinks),
                 dump_date: dump_date.or_else(|| dump_date_from_path(&dump)),
             };
             let manifest = build_index(open_dump(&dump)?, &out, &options)?;
@@ -216,8 +220,10 @@ fn print_report(manifest: &Manifest, out: &Path) {
     println!("    parse errors       {:>12}", c.parse_errors);
     println!("  names                {:>12}", c.names);
     println!("    shared             {:>12}", c.shared_names);
+    println!("    typo-correctable   {:>12}", c.fuzzy_names);
     println!("  artifact size        {:>12.2} MB", mb(s.total));
     println!("    names.fst          {:>12.2} MB", mb(s.names_fst));
+    println!("    names_fuzzy.fst    {:>12.2} MB", mb(s.names_fuzzy_fst));
     println!("    postings.bin       {:>12.2} MB", mb(s.postings_bin));
     println!("    records_hot.bin    {:>12.2} MB", mb(s.records_hot_bin));
     println!("    records_cold.bin   {:>12.2} MB", mb(s.records_cold_bin));

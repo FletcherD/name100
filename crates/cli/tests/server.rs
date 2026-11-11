@@ -170,7 +170,7 @@ fn matching_settings_come_from_the_environment_and_a_config_file() {
     drop(server);
 
     let config: PathBuf = index_dir().join("strict.toml");
-    std::fs::write(&config, "fuzzy_one_edit_min_len = 50\nfuzzy_two_edits_min_len = 50\n").unwrap();
+    std::fs::write(&config, "fuzzy_min_len = 50\n").unwrap();
     let server = Server::start(&["--config", config.to_str().unwrap()], &[]);
     assert_eq!(server.lookup("Madona", &[]).0, 1, "fuzzy matching is effectively off");
     assert_eq!(server.lookup("Madonna", &[]).0, 0);

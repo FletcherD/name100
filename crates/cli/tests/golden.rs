@@ -173,15 +173,47 @@ fn other_rejections_explain_the_gender() {
 }
 
 #[test]
-fn fuzzy_distance_depends_on_length() {
+fn typo_correction_is_one_edit_and_needs_five_characters() {
     // Under 5 characters: no correction. "Cher" is 4.
     assert_rejected("Chir", Reason::NotFound);
-    // 5 to 9 characters: one edit.
+    // One edit, at any length from 5 up.
     assert_eq!(qid(&assert_accepted("Madona", MatchedVia::Fuzzy)), "Q1744");
+    assert_eq!(qid(&assert_accepted("Hilary Clinton", MatchedVia::Fuzzy)), qid(&lookup("Hillary Clinton")));
+    // Never two, however long the name.
     assert_rejected("Maddona", Reason::NotFound);
-    // 10 or more: two edits.
-    assert_eq!(qid(&assert_accepted("Hilary Clintom", MatchedVia::Fuzzy)), qid(&lookup("Hillary Clinton")));
-    assert_rejected("Hilary Klintom", Reason::NotFound);
+    assert_rejected("Hilary Clintom", Reason::NotFound);
+    assert_rejected("Alexandria Ocasio Kortes", Reason::NotFound);
+}
+
+#[test]
+fn typos_are_only_corrected_towards_well_known_people() {
+    let index = fixture().matcher.index();
+    assert_eq!(index.manifest().fuzzy_min_sitelinks, 10);
+
+    // Jennifer Lanvin has 2 articles: found when typed exactly, never by correction.
+    let exact = lookup("Jennifer Lanvin");
+    assert_eq!(exact.matched_via, Some(MatchedVia::Exact));
+    assert!(exact.matched.as_ref().unwrap().sitelinks < 10);
+    assert!(index.fuzzy_names().len() < index.names().len());
+    assert!(!index.fuzzy_names().contains("jennifer lanvin"));
+    assert_rejected("Jennifer Lanvim", Reason::NotFound);
+
+    // Jennifer Warnes has about 30: her typo is corrected.
+    assert!(index.fuzzy_names().contains("jennifer warnes"));
+    let corrected = assert_accepted("Jennifer Warnez", MatchedVia::Fuzzy);
+    assert!(corrected.matched.as_ref().unwrap().sitelinks >= 10);
+
+    // Every correctable name is a real name with a well-known bearer.
+    use fst::Streamer;
+    let mut stream = index.fuzzy_names().stream();
+    let mut seen = 0u64;
+    while let Some(name) = stream.next() {
+        let hits = index.exact(std::str::from_utf8(name).unwrap()).expect("also in the main index");
+        let top = index.hot(hits.as_slice()[0]).unwrap();
+        assert!(top.sitelinks >= 10);
+        seen += 1;
+    }
+    assert_eq!(seen, index.manifest().counts.fuzzy_names);
 }
 
 #[test]
@@ -238,7 +270,7 @@ fn dominance_ratio_and_mononym_threshold_are_configurable() {
 fn swapped_letters_count_as_one_edit_unless_turned_off() {
     let response = assert_accepted("Madnona", MatchedVia::Fuzzy);
     assert_eq!(qid(&response), "Q1744");
-    assert_eq!(qid(&assert_accepted("Biliie Eilish", MatchedVia::Fuzzy)), qid(&lookup("Billie Eilish")));
+    assert_eq!(qid(&assert_accepted("Billei Eilish", MatchedVia::Fuzzy)), qid(&lookup("Billie Eilish")));
 
     let strict = matcher_with(MatchConfig { fuzzy_transpositions: false, ..Default::default() });
     assert_eq!(strict.lookup("Madnona").unwrap().reason, Some(Reason::NotFound));

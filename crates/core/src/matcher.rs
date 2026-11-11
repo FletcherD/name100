@@ -22,10 +22,10 @@ pub struct MatchConfig {
     pub dominance_ratio: f64,
     /// Sitelinks a person needs before a single-word name resolves to them.
     pub mononym_min_sitelinks: u32,
-    /// Shortest normalized input, in characters, that may be off by one edit.
-    pub fuzzy_one_edit_min_len: usize,
-    /// Shortest normalized input, in characters, that may be off by two edits.
-    pub fuzzy_two_edits_min_len: usize,
+    /// Shortest normalized input, in characters, that gets typo correction.
+    /// Correction is always a single edit, and only towards well-known
+    /// people (the index's `fuzzy_min_sitelinks`, fixed when it is built).
+    pub fuzzy_min_len: usize,
     /// Count swapping two adjacent letters as one edit instead of two. On by
     /// default: swaps are the most common typing error.
     pub fuzzy_transpositions: bool,
@@ -40,8 +40,7 @@ impl Default for MatchConfig {
         MatchConfig {
             dominance_ratio: 3.0,
             mononym_min_sitelinks: 40,
-            fuzzy_one_edit_min_len: 5,
-            fuzzy_two_edits_min_len: 10,
+            fuzzy_min_len: 5,
             fuzzy_transpositions: true,
             max_input_chars: 100,
             max_candidates: 5,
@@ -50,15 +49,9 @@ impl Default for MatchConfig {
 }
 
 impl MatchConfig {
-    /// Edits allowed for a normalized input of `chars` characters.
-    pub fn fuzzy_distance(&self, chars: usize) -> u8 {
-        if chars >= self.fuzzy_two_edits_min_len {
-            2
-        } else if chars >= self.fuzzy_one_edit_min_len {
-            1
-        } else {
-            0
-        }
+    /// Whether a normalized input of `chars` characters gets typo correction.
+    pub fn allows_fuzzy(&self, chars: usize) -> bool {
+        chars >= self.fuzzy_min_len
     }
 }
 
@@ -97,17 +90,15 @@ enum Stage {
 pub struct Matcher {
     index: Index,
     config: MatchConfig,
-    /// Precomputed automaton tables for one and two edits. Building these is
-    /// slow; building a per-query DFA from them takes microseconds.
+    /// Precomputed automaton tables for one edit. Building these is slow;
+    /// building a per-query DFA from them takes microseconds.
     one_edit: LevenshteinAutomatonBuilder,
-    two_edits: LevenshteinAutomatonBuilder,
 }
 
 impl Matcher {
     pub fn new(index: Index, config: MatchConfig) -> Matcher {
         let one_edit = LevenshteinAutomatonBuilder::new(1, config.fuzzy_transpositions);
-        let two_edits = LevenshteinAutomatonBuilder::new(2, config.fuzzy_transpositions);
-        Matcher { index, config, one_edit, two_edits }
+        Matcher { index, config, one_edit }
     }
 
     pub fn index(&self) -> &Index {
@@ -229,27 +220,22 @@ impl Matcher {
         }
     }
 
-    /// Every record under the indexed names closest to `normalized`, within
-    /// the edit distance its length allows.
+    /// Every record under the well-known names one edit from `normalized`.
+    ///
+    /// Only names of well-known people are searched, but each hit brings
+    /// everyone who shares that name, so the dominance rule still sees them.
     fn fuzzy(&self, normalized: &str) -> Stage {
-        let builder = match self.config.fuzzy_distance(normalized.chars().count()) {
-            0 => return Stage::Miss,
-            1 => &self.one_edit,
-            _ => &self.two_edits,
-        };
-        let dfa = builder.build_dfa(normalized);
-        let mut stream = self.index.names().search_with_state(&dfa).into_stream();
-        let mut best = u8::MAX;
+        if !self.config.allows_fuzzy(normalized.chars().count()) {
+            return Stage::Miss;
+        }
+        let dfa = self.one_edit.build_dfa(normalized);
+        let mut stream = self.index.fuzzy_names().search_with_state(&dfa).into_stream();
         let mut records: Vec<u32> = Vec::new();
-        while let Some((_, value, state)) = stream.next() {
-            let Distance::Exact(distance) = dfa.distance(state) else {
+        while let Some((name, state)) = stream.next() {
+            if !matches!(dfa.distance(state), Distance::Exact(_)) {
                 continue;
-            };
-            if distance < best {
-                best = distance;
-                records.clear();
             }
-            if distance == best {
+            if let Some(value) = self.index.names().get(name) {
                 records.extend_from_slice(self.index.hits(value).as_slice());
             }
         }
@@ -301,10 +287,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fuzzy_distance_follows_input_length() {
+    fn short_input_gets_no_typo_correction() {
         let config = MatchConfig::default();
-        let distances: Vec<u8> = [0, 4, 5, 9, 10, 40].map(|n| config.fuzzy_distance(n)).to_vec();
-        assert_eq!(distances, [0, 0, 1, 1, 2, 2]);
+        assert_eq!([0, 4, 5, 40].map(|n| config.allows_fuzzy(n)), [false, false, true, true]);
     }
 
     #[test]

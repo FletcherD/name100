@@ -5,6 +5,7 @@
 //! | file               | contents                                                        |
 //! | ------------------ | --------------------------------------------------------------- |
 //! | `names.fst`        | normalized name → value (see [`SHARED_NAME_BIT`])                |
+//! | `names_fuzzy.fst`  | the subset of names typo correction may land on (a set)          |
 //! | `postings.bin`     | magic, then `u32` words: `[len, index, index, ...]` per shared name |
 //! | `records_hot.bin`  | magic, then one 8-byte [`HotRecord`] per record                  |
 //! | `records_cold.bin` | magic, `u64` count, `count + 1` `u64` offsets, then the records  |
@@ -20,9 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::attribute::Attributes;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub const NAMES_FILE: &str = "names.fst";
+pub const FUZZY_NAMES_FILE: &str = "names_fuzzy.fst";
 pub const POSTINGS_FILE: &str = "postings.bin";
 pub const HOT_FILE: &str = "records_hot.bin";
 pub const COLD_FILE: &str = "records_cold.bin";
@@ -188,6 +190,10 @@ pub struct Counts {
     pub names: u64,
     /// Names that map to more than one record.
     pub shared_names: u64,
+    /// Names typo correction may land on: those borne by at least one
+    /// person with `fuzzy_min_sitelinks` sitelinks.
+    #[serde(default)]
+    pub fuzzy_names: u64,
     /// Total (name, record) pairs.
     pub name_record_pairs: u64,
     /// Kept humans per "sex or gender" value, keyed by QID, with `none` for
@@ -199,6 +205,8 @@ pub struct Counts {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Sizes {
     pub names_fst: u64,
+    #[serde(default)]
+    pub names_fuzzy_fst: u64,
     pub postings_bin: u64,
     pub records_hot_bin: u64,
     pub records_cold_bin: u64,
@@ -216,6 +224,9 @@ pub struct Manifest {
     /// Wikidata properties stored as per-person attributes, in on-disk order.
     pub attributes: Vec<String>,
     pub min_sitelinks: u32,
+    /// Sitelinks a person needs before a misspelling is corrected to them.
+    #[serde(default)]
+    pub fuzzy_min_sitelinks: u32,
     pub counts: Counts,
     pub sizes: Sizes,
     pub build_seconds: f64,

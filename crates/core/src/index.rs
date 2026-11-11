@@ -8,7 +8,7 @@ use memmap2::Mmap;
 use crate::attribute::Attribute;
 use crate::artifact::{
     ColdRecord, HotRecord, Manifest, COLD_FILE, COLD_MAGIC, HOT_FILE, HOT_MAGIC, HOT_RECORD_LEN,
-    MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC, SCHEMA_VERSION,
+    FUZZY_NAMES_FILE, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC, SCHEMA_VERSION,
     SHARED_NAME_BIT,
 };
 
@@ -44,6 +44,7 @@ impl Hits<'_> {
 /// cold records are memory mapped and paged in on demand.
 pub struct Index {
     names: fst::Map<Vec<u8>>,
+    fuzzy_names: fst::Set<Vec<u8>>,
     postings: Vec<u32>,
     hot: Vec<HotRecord>,
     cold: Mmap,
@@ -73,6 +74,10 @@ impl Index {
         let names_path = dir.join(NAMES_FILE);
         let names = fst::Map::new(read(&names_path)?)
             .map_err(|e| corrupt(&names_path, e.to_string()))?;
+
+        let fuzzy_path = dir.join(FUZZY_NAMES_FILE);
+        let fuzzy_names = fst::Set::new(read(&fuzzy_path)?)
+            .map_err(|e| corrupt(&fuzzy_path, e.to_string()))?;
 
         let postings_path = dir.join(POSTINGS_FILE);
         let postings_bytes = read(&postings_path)?;
@@ -114,7 +119,7 @@ impl Index {
             return Err(corrupt(&cold_path, "truncated offset table".into()));
         }
 
-        Ok(Index { names, postings, hot, cold, cold_path, manifest })
+        Ok(Index { names, fuzzy_names, postings, hot, cold, cold_path, manifest })
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -133,6 +138,14 @@ impl Index {
     /// The name FST, for automaton searches.
     pub fn names(&self) -> &fst::Map<Vec<u8>> {
         &self.names
+    }
+
+    /// The names typo correction may land on: a subset of [`Index::names`]
+    /// holding only names of well-known people. Searching this instead of
+    /// every name keeps fuzzy lookups fast and stops a stray phrase from
+    /// being "corrected" into an obscure person's alias.
+    pub fn fuzzy_names(&self) -> &fst::Set<Vec<u8>> {
+        &self.fuzzy_names
     }
 
     /// Records whose label or alias normalizes to exactly `normalized`.

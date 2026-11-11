@@ -23,8 +23,8 @@ const KEYS: &[&str] = &[
     "min_sitelinks",
     "dominance_ratio",
     "mononym_min_sitelinks",
-    "fuzzy_one_edit_min_len",
-    "fuzzy_two_edits_min_len",
+    "fuzzy_min_sitelinks",
+    "fuzzy_min_len",
     "fuzzy_transpositions",
     "max_input_chars",
     "max_candidates",
@@ -42,10 +42,12 @@ pub struct Config {
     pub langs: Vec<String>,
     /// Fewest Wikipedia articles a person needs for `build-index` to keep them.
     pub min_sitelinks: u32,
+    /// Sitelinks a person needs before `build-index` lets a misspelling be
+    /// corrected to them. Changing it means rebuilding the index.
+    pub fuzzy_min_sitelinks: u32,
     pub dominance_ratio: f64,
     pub mononym_min_sitelinks: u32,
-    pub fuzzy_one_edit_min_len: usize,
-    pub fuzzy_two_edits_min_len: usize,
+    pub fuzzy_min_len: usize,
     pub fuzzy_transpositions: bool,
     pub max_input_chars: usize,
     pub max_candidates: usize,
@@ -59,10 +61,10 @@ impl Default for Config {
             bind: "127.0.0.1:8080".to_owned(),
             langs: vec!["en".to_owned(), "mul".to_owned()],
             min_sitelinks: 1,
+            fuzzy_min_sitelinks: 10,
             dominance_ratio: matching.dominance_ratio,
             mononym_min_sitelinks: matching.mononym_min_sitelinks,
-            fuzzy_one_edit_min_len: matching.fuzzy_one_edit_min_len,
-            fuzzy_two_edits_min_len: matching.fuzzy_two_edits_min_len,
+            fuzzy_min_len: matching.fuzzy_min_len,
             fuzzy_transpositions: matching.fuzzy_transpositions,
             max_input_chars: matching.max_input_chars,
             max_candidates: matching.max_candidates,
@@ -102,13 +104,8 @@ impl Config {
         if self.dominance_ratio.is_nan() || self.dominance_ratio < 1.0 {
             bail!("invalid configuration: dominance_ratio must be at least 1");
         }
-        if self.fuzzy_one_edit_min_len > self.fuzzy_two_edits_min_len {
-            bail!(
-                "invalid configuration: fuzzy_one_edit_min_len must not exceed fuzzy_two_edits_min_len"
-            );
-        }
-        if self.fuzzy_one_edit_min_len < 2 {
-            bail!("invalid configuration: fuzzy_one_edit_min_len must be at least 2");
+        if self.fuzzy_min_len < 2 {
+            bail!("invalid configuration: fuzzy_min_len must be at least 2");
         }
         Ok(())
     }
@@ -117,8 +114,7 @@ impl Config {
         MatchConfig {
             dominance_ratio: self.dominance_ratio,
             mononym_min_sitelinks: self.mononym_min_sitelinks,
-            fuzzy_one_edit_min_len: self.fuzzy_one_edit_min_len,
-            fuzzy_two_edits_min_len: self.fuzzy_two_edits_min_len,
+            fuzzy_min_len: self.fuzzy_min_len,
             fuzzy_transpositions: self.fuzzy_transpositions,
             max_input_chars: self.max_input_chars,
             max_candidates: self.max_candidates,
@@ -220,8 +216,8 @@ mod tests {
             for bad in [
                 "dominance_ratio = 0.5",
                 "langs = []",
-                "fuzzy_one_edit_min_len = 12",
-                "fuzzy_one_edit_min_len = 0",
+                "fuzzy_min_len = 0",
+                "fuzzy_two_edits_min_len = 10",
                 "mononym_min_sitelinks = \"forty\"",
             ] {
                 jail.create_file("hundred.toml", bad)?;

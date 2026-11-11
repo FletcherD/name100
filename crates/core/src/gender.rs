@@ -9,6 +9,8 @@ pub const WOMAN_GENDERS: &[u32] = &[
     6581072,  // female
     1052281,  // trans woman
     15145779, // cisgender woman
+    121307100, // intersex woman
+    138806923, // intersex trans woman
 ];
 
 /// English names of the `P21` values seen on people, as labelled in Wikidata.
@@ -42,6 +44,17 @@ const LABELS: &[(u32, &str)] = &[
     (207959, "androgyny"),
     (179294, "eunuch"),
     (52261234, "neutral sex"),
+    (121307100, "intersex woman"),
+    (121307094, "intersex man"),
+    (138806923, "intersex trans woman"),
+    (138806924, "intersex trans man"),
+    (135928189, "trans non-binary"),
+    (17148251, "travesti"),
+    (48796147, "nádleehi"),
+    (25388691, "assigned male at birth"),
+    (56315990, "assigned female at birth"),
+    (44148, "male organism"),
+    (43445, "female organism"),
 ];
 
 /// The English name of a gender value, if it is one of the known ones.

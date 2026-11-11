@@ -60,6 +60,7 @@ lbzip2 -dc data/wikidata-*-all.json.bz2 | cargo run --release -p hundred-cli -- 
 - Never put a QID or property ID in code or tests from memory. Check it against Wikidata first; the spec's own example QIDs are illustrative.
 - The fixture is real data and drifts when refetched (sitelink counts, new statements). Tests assert on relationships and stable facts, not exact sitelink numbers.
 - The Wikidata query service is rate limited to about one request a minute; `fetch_fixture.py` makes a single combined query for that reason.
+- The full dump is not in QID order: a prefix of the file is a scattered sample of people, not the famous ones. A truncated download can still be built: `head -c <N>G dump.bz2 | lbzip2 -dc | head -n -1 | hundred build-index --dump - ...` (the last line is cut off, so drop it).
 - Changing `Attribute::ALL` or the record layout changes the artifact. Existing indexes must be rebuilt, and the reader refuses a mismatched attribute list.
 - `serve` prints `hundred: listening on http://ADDR` as its first stderr line; tests bind to port 0 and parse it. Keep it first.
 - Server metrics use a per-app recorder (`metrics::with_local_recorder`), not a global one, so tests can run several apps.
@@ -74,9 +75,14 @@ lbzip2 -dc data/wikidata-*-all.json.bz2 | cargo run --release -p hundred-cli -- 
 - Fictional is decided by a list of character classes, checked before human.
 - The mononym sitelink threshold applies even when a single-token name has only one record.
 - `fuzzy_transpositions` is on by default: two swapped neighbouring letters are one edit.
+- Typo correction is one edit only, and only towards people with at least `fuzzy_min_sitelinks` articles (default 10). That limit is baked into the index as `names_fuzzy.fst`; changing it means rebuilding. Two edits over all names took 2–3 ms on a 13% index and accepted junk ("some woman" → alias "Swole Woman").
+- Intersex woman and intersex trans woman are accepted gender values; the gender table was extended from values seen in a partial full-dump build.
 - Fuzzy search uses the `levenshtein_automata` crate, not `fst`'s `levenshtein` feature: the latter took 1–18 ms per two-edit query, over the 1 ms p99 budget.
-
-## Measured so far (fixture index, in-process)
-
-Exact lookups take about 1 µs, one-edit fuzzy about 20 µs, two-edit fuzzy 60–120 µs. Over loopback HTTP with a keep-alive Python client: p50 about 95 µs, p99 about 245 µs (target: p99 under 5 ms). Nearly all the fuzzy cost is building the per-query automaton, so it should not grow much on the full index, but that is unmeasured.
 - Eleven attributes are stored per person so the index can serve other category games later.
+
+## Measured so far
+
+- Fixture index, in-process: exact lookups about 1 µs, one-edit typo correction about 20 µs.
+- Fixture index over loopback HTTP (keep-alive Python client): p50 about 95 µs, p99 about 245 µs. Target: p99 under 5 ms.
+- First 14 GB of the dump (13%): 17.4 million entities, 886,725 people kept, 1.26 million names, 116 MB artifact, 10.5 minutes, 566 MB peak memory, server load 25 ms. Projects to roughly 6.5 million people, 850 MB and 75-80 minutes for the full dump.
+- On that index, exact lookups stayed at 3-5 µs. The old two-edit search over all names took 2-3 ms, which is why typo correction was cut back. The replacement has not been measured on a large index yet.

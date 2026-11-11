@@ -14,6 +14,9 @@ bind = "127.0.0.1:8080"
 langs = ["en", "mul"]
 # Fewest Wikipedia articles a person needs to be kept.
 min_sitelinks = 1
+# Articles a person needs before a misspelling is corrected to them. Exact
+# matches are unaffected. Baked into the index: changing it means rebuilding.
+fuzzy_min_sitelinks = 10
 
 # --- matching ---
 # A shared name resolves to its most famous bearer only if they have at least
@@ -21,9 +24,9 @@ min_sitelinks = 1
 dominance_ratio = 3.0
 # Sitelinks needed before a single-word name ("Madonna") resolves to someone.
 mononym_min_sitelinks = 40
-# Shortest input, in characters, allowed one typo; and two typos.
-fuzzy_one_edit_min_len = 5
-fuzzy_two_edits_min_len = 10
+# Shortest input, in characters, that gets typo correction. Correction is
+# always a single edit.
+fuzzy_min_len = 5
 # Count two swapped neighbouring letters as one typo.
 fuzzy_transpositions = true
 # Longest input looked up at all.

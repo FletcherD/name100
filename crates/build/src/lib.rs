@@ -10,7 +10,7 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use hundred_core::artifact::{
     ColdRecord, Counts, HotRecord, Kind, Manifest, Sizes, COLD_FILE, COLD_MAGIC, HOT_FILE,
-    HOT_MAGIC, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC,
+    FUZZY_NAMES_FILE, HOT_MAGIC, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC,
     SCHEMA_VERSION, SHARED_NAME_BIT,
 };
 use hundred_core::Attribute;
@@ -28,13 +28,21 @@ pub struct BuildOptions {
     pub langs: Vec<String>,
     /// Minimum Wikipedia sitelinks for an entity to be kept.
     pub min_sitelinks: u32,
+    /// Sitelinks a person needs before a misspelling is corrected to them.
+    /// Exact matches are not affected.
+    pub fuzzy_min_sitelinks: u32,
     /// Date of the dump, `YYYY-MM-DD`, recorded in the manifest.
     pub dump_date: Option<String>,
 }
 
 impl Default for BuildOptions {
     fn default() -> Self {
-        BuildOptions { langs: vec!["en".into(), "mul".into()], min_sitelinks: 1, dump_date: None }
+        BuildOptions {
+            langs: vec!["en".into(), "mul".into()],
+            min_sitelinks: 1,
+            fuzzy_min_sitelinks: 10,
+            dump_date: None,
+        }
     }
 }
 
@@ -86,18 +94,21 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
 
     fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     write_records(&people, out, &mut counts)?;
-    write_names(&mut people, out, &mut counts)?;
+    // People are sorted by sitelinks, so the well-known ones are a prefix.
+    let well_known = people.partition_point(|p| p.sitelinks >= options.fuzzy_min_sitelinks);
+    write_names(&mut people, well_known as u32, out, &mut counts)?;
 
     let size = |name: &str| -> Result<u64> { Ok(fs::metadata(out.join(name))?.len()) };
     let mut sizes = Sizes {
         names_fst: size(NAMES_FILE)?,
+        names_fuzzy_fst: size(FUZZY_NAMES_FILE)?,
         postings_bin: size(POSTINGS_FILE)?,
         records_hot_bin: size(HOT_FILE)?,
         records_cold_bin: size(COLD_FILE)?,
         total: 0,
     };
     sizes.total =
-        sizes.names_fst + sizes.postings_bin + sizes.records_hot_bin + sizes.records_cold_bin;
+        sizes.names_fst + sizes.names_fuzzy_fst + sizes.postings_bin + sizes.records_hot_bin + sizes.records_cold_bin;
 
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
@@ -106,6 +117,7 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
         langs: options.langs.clone(),
         attributes: Attribute::properties(),
         min_sitelinks: options.min_sitelinks,
+        fuzzy_min_sitelinks: options.fuzzy_min_sitelinks,
         counts,
         sizes,
         build_seconds: (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
@@ -227,7 +239,14 @@ fn write_records(people: &[Person], out: &Path, counts: &mut Counts) -> Result<(
     Ok(())
 }
 
-fn write_names(people: &mut [Person], out: &Path, counts: &mut Counts) -> Result<()> {
+/// Write the name index. Records below `well_known` (a record index) are the
+/// people typo correction may land on.
+fn write_names(
+    people: &mut [Person],
+    well_known: u32,
+    out: &Path,
+    counts: &mut Counts,
+) -> Result<()> {
     let mut pairs: Vec<(String, u32)> = Vec::new();
     for (index, person) in people.iter_mut().enumerate() {
         pairs.extend(std::mem::take(&mut person.names).into_iter().map(|n| (n, index as u32)));
@@ -239,6 +258,7 @@ fn write_names(people: &mut [Person], out: &Path, counts: &mut Counts) -> Result
     counts.name_record_pairs = pairs.len() as u64;
 
     let mut names = fst::MapBuilder::new(create(out, NAMES_FILE)?)?;
+    let mut fuzzy_names = fst::SetBuilder::new(create(out, FUZZY_NAMES_FILE)?)?;
     let mut postings = create(out, POSTINGS_FILE)?;
     postings.write_all(POSTINGS_MAGIC)?;
     let mut next_word: u64 = 0;
@@ -246,6 +266,11 @@ fn write_names(people: &mut [Person], out: &Path, counts: &mut Counts) -> Result
     for group in pairs.chunk_by(|a, b| a.0 == b.0) {
         let name = &group[0].0;
         counts.names += 1;
+        // The group is in popularity order, so its first record is its most famous.
+        if group[0].1 < well_known {
+            fuzzy_names.insert(name)?;
+            counts.fuzzy_names += 1;
+        }
         if let [(_, index)] = group {
             names.insert(name, *index as u64)?;
             continue;
@@ -259,6 +284,7 @@ fn write_names(people: &mut [Person], out: &Path, counts: &mut Counts) -> Result
         next_word += 1 + group.len() as u64;
     }
     names.finish()?;
+    fuzzy_names.finish()?;
     postings.flush()?;
     Ok(())
 }
