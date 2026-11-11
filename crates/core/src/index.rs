@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use memmap2::Mmap;
 
 use crate::attribute::Attribute;
-use crate::artifact::{
+use crate::catalogue::{Catalogue, CatalogueData};
+use crate::category::category_labels;
+use crate::artifact::{CATALOGUE_FILE, CATALOGUE_MAGIC, CATEGORIES_FILE, CATEGORIES_MAGIC, LABELS_FILE, LABELS_MAGIC,
     ColdRecord, HotRecord, Manifest, COLD_FILE, COLD_MAGIC, HOT_FILE, HOT_MAGIC, HOT_RECORD_LEN,
     FUZZY_NAMES_FILE, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC, SCHEMA_VERSION,
     SHARED_NAME_BIT,
@@ -20,6 +22,8 @@ pub enum IndexError {
     Corrupt { path: PathBuf, message: String },
     #[error("index stores attributes {found:?} but this build expects {expected:?}; rebuild the index")]
     Attributes { found: Vec<String>, expected: Vec<String> },
+    #[error("index was built with different occupation categories; rebuild the index")]
+    Categories,
     #[error("index schema version {found} is not supported (expected {expected}); rebuild the index")]
     SchemaVersion { found: u32, expected: u32 },
 }
@@ -49,6 +53,10 @@ pub struct Index {
     hot: Vec<HotRecord>,
     cold: Mmap,
     cold_path: PathBuf,
+    labels: Labels,
+    catalogue: Catalogue,
+    /// Sorted (occupation QID, category id).
+    occupation_categories: Vec<(u32, u8)>,
     manifest: Manifest,
 }
 
@@ -70,6 +78,34 @@ impl Index {
                 expected: Attribute::properties(),
             });
         }
+
+        if manifest.occupation_categories != category_labels() {
+            return Err(IndexError::Categories);
+        }
+
+        let labels_path = dir.join(LABELS_FILE);
+        let labels = Labels::parse(read(&labels_path)?)
+            .ok_or_else(|| corrupt(&labels_path, "malformed".into()))?;
+
+        let catalogue_path = dir.join(CATALOGUE_FILE);
+        let catalogue_bytes = read(&catalogue_path)?;
+        let catalogue = body(&catalogue_path, &catalogue_bytes, CATALOGUE_MAGIC, 1)
+            .ok()
+            .and_then(CatalogueData::decode)
+            .map(Catalogue::new)
+            .ok_or_else(|| corrupt(&catalogue_path, "malformed".into()))?;
+
+        let categories_path = dir.join(CATEGORIES_FILE);
+        let categories_bytes = read(&categories_path)?;
+        let occupation_categories =
+            body(&categories_path, &categories_bytes, CATEGORIES_MAGIC, 8)?
+                .chunks_exact(8)
+                .map(|pair| {
+                    let qid = u32::from_le_bytes(pair[..4].try_into().unwrap());
+                    let category = u32::from_le_bytes(pair[4..].try_into().unwrap());
+                    (qid, category as u8)
+                })
+                .collect();
 
         let names_path = dir.join(NAMES_FILE);
         let names = fst::Map::new(read(&names_path)?)
@@ -119,7 +155,18 @@ impl Index {
             return Err(corrupt(&cold_path, "truncated offset table".into()));
         }
 
-        Ok(Index { names, fuzzy_names, postings, hot, cold, cold_path, manifest })
+        Ok(Index {
+            names,
+            fuzzy_names,
+            postings,
+            hot,
+            cold,
+            cold_path,
+            labels,
+            catalogue,
+            occupation_categories,
+            manifest,
+        })
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -163,6 +210,23 @@ impl Index {
         Hits::Many(self.postings.get(start + 1..start + 1 + len).unwrap_or(&[]))
     }
 
+    /// The English label of an item a person's attribute points at (an
+    /// occupation, a country, ...), if the build found one.
+    pub fn label(&self, qid: u32) -> Option<&str> {
+        self.labels.get(qid)
+    }
+
+    /// The playable categories.
+    pub fn catalogue(&self) -> &Catalogue {
+        &self.catalogue
+    }
+
+    /// The broad category an occupation falls under; see [`crate::category`].
+    pub fn occupation_category(&self, occupation: u32) -> Option<u8> {
+        let at = self.occupation_categories.binary_search_by_key(&occupation, |pair| pair.0).ok()?;
+        Some(self.occupation_categories[at].1)
+    }
+
     pub fn hot(&self, index: u32) -> Option<HotRecord> {
         self.hot.get(index as usize).copied()
     }
@@ -179,6 +243,36 @@ impl Index {
         let (start, end) = (offset(table), offset(table + 8));
         let bytes = self.cold.get(start..end).ok_or_else(|| bad("offsets out of bounds"))?;
         ColdRecord::decode(bytes).ok_or_else(|| bad("undecodable"))
+    }
+}
+
+/// `labels.bin` in memory: sorted QIDs, offsets into a string blob.
+struct Labels {
+    qids: Vec<u32>,
+    offsets: Vec<u32>,
+    text: String,
+}
+
+impl Labels {
+    fn parse(bytes: Vec<u8>) -> Option<Labels> {
+        let rest = bytes.strip_prefix(LABELS_MAGIC.as_slice())?;
+        let count = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+        let words = |from: usize, n: usize| -> Option<Vec<u32>> {
+            let raw = rest.get(from..from + 4 * n)?;
+            Some(raw.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect())
+        };
+        let qids = words(4, count)?;
+        let offsets = words(4 + 4 * count, count + 1)?;
+        let text = String::from_utf8(rest.get(4 + 4 * (2 * count + 1)..)?.to_vec()).ok()?;
+        let in_order = offsets.windows(2).all(|pair| pair[0] <= pair[1])
+            && offsets.last().is_some_and(|&end| end as usize == text.len())
+            && offsets.iter().all(|&at| text.is_char_boundary(at as usize));
+        in_order.then_some(Labels { qids, offsets, text })
+    }
+
+    fn get(&self, qid: u32) -> Option<&str> {
+        let at = self.qids.binary_search(&qid).ok()?;
+        Some(&self.text[self.offsets[at] as usize..self.offsets[at + 1] as usize])
     }
 }
 

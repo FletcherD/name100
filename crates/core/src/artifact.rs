@@ -9,6 +9,9 @@
 //! | `postings.bin`     | magic, then `u32` words: `[len, index, index, ...]` per shared name |
 //! | `records_hot.bin`  | magic, then one 8-byte [`HotRecord`] per record                  |
 //! | `records_cold.bin` | magic, `u64` count, `count + 1` `u64` offsets, then the records  |
+//! | `labels.bin`       | magic, `u32` count, sorted `u32` QIDs, `count + 1` `u32` offsets, then English labels of the items people's attributes point at |
+//! | `occupation_categories.bin` | magic, then sorted (`u32` occupation QID, `u32` category id) pairs |
+//! | `catalogue.bin`    | magic, then the playable categories and the class ancestors of attribute values; see [`crate::catalogue`] |
 //! | `manifest.json`    | [`Manifest`]                                                     |
 //!
 //! All integers are little endian. Records are sorted by sitelink count,
@@ -21,19 +24,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::attribute::Attributes;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const NAMES_FILE: &str = "names.fst";
 pub const FUZZY_NAMES_FILE: &str = "names_fuzzy.fst";
 pub const POSTINGS_FILE: &str = "postings.bin";
 pub const HOT_FILE: &str = "records_hot.bin";
 pub const COLD_FILE: &str = "records_cold.bin";
+pub const LABELS_FILE: &str = "labels.bin";
+pub const CATEGORIES_FILE: &str = "occupation_categories.bin";
+pub const CATALOGUE_FILE: &str = "catalogue.bin";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 pub const MAGIC_LEN: usize = 8;
 pub const POSTINGS_MAGIC: &[u8; MAGIC_LEN] = b"HNDRPST1";
 pub const HOT_MAGIC: &[u8; MAGIC_LEN] = b"HNDRHOT1";
 pub const COLD_MAGIC: &[u8; MAGIC_LEN] = b"HNDRCLD1";
+pub const LABELS_MAGIC: &[u8; MAGIC_LEN] = b"HNDRLBL1";
+pub const CATEGORIES_MAGIC: &[u8; MAGIC_LEN] = b"HNDRCAT1";
+pub const CATALOGUE_MAGIC: &[u8; MAGIC_LEN] = b"HNDRCTG1";
 
 /// FST values with this bit clear are a record index. With it set, the low
 /// 63 bits are a word offset into `postings.bin` (after the magic), where a
@@ -111,6 +120,9 @@ pub struct ColdRecord {
     pub enwiki_title: String,
     /// Gender, occupations, awards and the other category attributes.
     pub attributes: Attributes,
+    /// Every other indexed name of the person, as written in Wikidata, so a
+    /// response can say which one a guess matched ("Stefani Germanotta").
+    pub aliases: Vec<String>,
 }
 
 impl ColdRecord {
@@ -118,20 +130,35 @@ impl ColdRecord {
         [&self.label, &self.description, &self.enwiki_title].map(|text| clip(text))
     }
 
+    fn stored_aliases(&self) -> impl Iterator<Item = &str> {
+        self.aliases.iter().take(u16::MAX as usize).map(|alias| clip(alias))
+    }
+
     pub fn encoded_len(&self) -> usize {
         8 + self.attributes.encoded_len()
             + self.texts().iter().map(|text| 2 + text.len()).sum::<usize>()
+            + 2
+            + self.stored_aliases().map(|alias| 2 + alias.len()).sum::<usize>()
     }
 
-    /// Layout: birth and death year (`i32`), the attribute lists, then three
-    /// strings (a `u16` length and UTF-8 bytes).
+    /// Layout: birth and death year (`i32`), the attribute lists, three
+    /// strings (a `u16` length and UTF-8 bytes), then a `u16` count of
+    /// aliases and that many strings.
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.birth_year.unwrap_or(NO_YEAR).to_le_bytes());
         out.extend_from_slice(&self.death_year.unwrap_or(NO_YEAR).to_le_bytes());
         self.attributes.encode(out);
-        for text in self.texts() {
+        fn push(out: &mut Vec<u8>, text: &str) {
             out.extend_from_slice(&(text.len() as u16).to_le_bytes());
             out.extend_from_slice(text.as_bytes());
+        }
+        for text in self.texts() {
+            push(out, text);
+        }
+        let alias_count = self.stored_aliases().count() as u16;
+        out.extend_from_slice(&alias_count.to_le_bytes());
+        for alias in self.stored_aliases() {
+            push(out, alias);
         }
     }
 
@@ -150,13 +177,24 @@ impl ColdRecord {
             pos += 2 + len;
             Some(value.to_owned())
         };
+        let (label, description, enwiki_title) = (text()?, text()?, text()?);
+        let alias_count = u16::from_le_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?);
+        pos += 2;
+        let mut text = || -> Option<String> {
+            let len = u16::from_le_bytes(bytes.get(pos..pos + 2)?.try_into().ok()?) as usize;
+            let value = std::str::from_utf8(bytes.get(pos + 2..pos + 2 + len)?).ok()?;
+            pos += 2 + len;
+            Some(value.to_owned())
+        };
+        let aliases = (0..alias_count).map(|_| text()).collect::<Option<Vec<_>>>()?;
         Some(ColdRecord {
             birth_year,
             death_year,
-            label: text()?,
-            description: text()?,
-            enwiki_title: text()?,
+            label,
+            description,
+            enwiki_title,
             attributes,
+            aliases,
         })
     }
 }
@@ -196,6 +234,20 @@ pub struct Counts {
     pub fuzzy_names: u64,
     /// Total (name, record) pairs.
     pub name_record_pairs: u64,
+    /// Attribute values (occupations, countries, ...) with a stored English label.
+    #[serde(default)]
+    pub labels: u64,
+    /// "Subclass of" links read from the dump, used to categorize occupations.
+    #[serde(default)]
+    pub subclass_links: u64,
+    /// Distinct occupations held by kept people, and how many map to a category.
+    #[serde(default)]
+    pub occupations: u64,
+    #[serde(default)]
+    pub occupations_categorized: u64,
+    /// Playable categories in the catalogue.
+    #[serde(default)]
+    pub catalogue_entries: u64,
     /// Kept humans per "sex or gender" value, keyed by QID, with `none` for
     /// humans that have no current value. Someone with two values counts
     /// under both. Fictional records are not counted.
@@ -210,6 +262,12 @@ pub struct Sizes {
     pub postings_bin: u64,
     pub records_hot_bin: u64,
     pub records_cold_bin: u64,
+    #[serde(default)]
+    pub labels_bin: u64,
+    #[serde(default)]
+    pub occupation_categories_bin: u64,
+    #[serde(default)]
+    pub catalogue_bin: u64,
     pub total: u64,
 }
 
@@ -223,10 +281,16 @@ pub struct Manifest {
     pub langs: Vec<String>,
     /// Wikidata properties stored as per-person attributes, in on-disk order.
     pub attributes: Vec<String>,
+    /// Occupation category labels, in id order.
+    #[serde(default)]
+    pub occupation_categories: Vec<String>,
     pub min_sitelinks: u32,
     /// Sitelinks a person needs before a misspelling is corrected to them.
     #[serde(default)]
     pub fuzzy_min_sitelinks: u32,
+    /// People a category needs to be in the catalogue.
+    #[serde(default)]
+    pub category_min_people: u32,
     pub counts: Counts,
     pub sizes: Sizes,
     pub build_seconds: f64,
@@ -260,6 +324,7 @@ mod tests {
             death_year: None,
             enwiki_title: String::new(),
             attributes,
+            aliases: vec!["Cleopatra VII".into(), "Κλεοπάτρα".into()],
         };
         let mut bytes = Vec::new();
         record.encode(&mut bytes);

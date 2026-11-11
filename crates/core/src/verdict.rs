@@ -17,6 +17,8 @@ pub enum Reason {
     /// A real human who is not recorded as a woman; see `reason_detail`.
     NotWoman,
     Fictional,
+    /// A real person, but not in the category being played; see `reason_detail`.
+    NotInCategory,
     /// Several people share the name and none clearly dominates.
     Ambiguous,
     NotFound,
@@ -28,6 +30,7 @@ impl Reason {
             Reason::NotAName => "not_a_name",
             Reason::NotWoman => "not_woman",
             Reason::Fictional => "fictional",
+            Reason::NotInCategory => "not_in_category",
             Reason::Ambiguous => "ambiguous",
             Reason::NotFound => "not_found",
         }
@@ -50,6 +53,16 @@ impl MatchedVia {
     }
 }
 
+/// Which of a person's names a guess matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchedAs {
+    /// The person's main name, the one shown as `match.name`.
+    Name,
+    /// Another name they are known by: a birth name, nickname or stage name.
+    Alias,
+}
+
 /// A person, as shown to the player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Match {
@@ -61,12 +74,29 @@ pub struct Match {
     pub sitelinks: u32,
     /// Null when the person has no English Wikipedia article.
     pub wikipedia_url: Option<String>,
+    /// Broad occupation categories ("Musician", "Actor"), the one most of
+    /// their occupations fall under first. Empty when none apply.
+    #[serde(default)]
+    pub categories: Vec<String>,
+    /// Occupations as Wikidata names them ("singer-songwriter").
+    #[serde(default)]
+    pub occupations: Vec<String>,
+    /// Countries of citizenship.
+    #[serde(default)]
+    pub citizenships: Vec<String>,
+    /// Current gender values as Wikidata names them ("female", "genderfluid").
+    #[serde(default)]
+    pub genders: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Response {
     pub input: String,
     pub normalized: String,
+    /// The category being played, as term ids (`["occupation:Q33999"]`);
+    /// empty for the original game of naming women.
+    #[serde(default)]
+    pub category: Vec<String>,
     pub verdict: Verdict,
     /// Null when accepted.
     pub reason: Option<Reason>,
@@ -76,6 +106,12 @@ pub struct Response {
     pub matched_via: Option<MatchedVia>,
     /// The normalized input, when a fuzzy match corrected it.
     pub corrected_from: Option<String>,
+    /// The name of the person that the guess matched, as written in Wikidata:
+    /// "Stefani Germanotta" for a guess that resolved to Lady Gaga. Set
+    /// whenever `match` is.
+    pub matched_name: Option<String>,
+    /// Whether `matched_name` is the person's main name or an alias.
+    pub matched_as: Option<MatchedAs>,
     /// The person the name resolved to. Set for accepted names and for
     /// `not_woman` and `fictional` rejections.
     #[serde(rename = "match")]
@@ -114,10 +150,16 @@ impl Response {
                 if !facts.is_empty() {
                     line.push_str(&format!(" — {}", facts.join(", ")));
                 }
-                match (self.matched_via, &self.corrected_from) {
-                    (Some(via), Some(_)) => line.push_str(&format!(" [{}, corrected]", via.as_str())),
-                    (Some(via), None) => line.push_str(&format!(" [{}]", via.as_str())),
-                    (None, _) => {}
+                let mut tags: Vec<String> = Vec::new();
+                tags.extend(self.matched_via.map(|via| via.as_str().to_owned()));
+                if self.corrected_from.is_some() {
+                    tags.push("corrected".to_owned());
+                }
+                if let (Some(MatchedAs::Alias), Some(alias)) = (self.matched_as, &self.matched_name) {
+                    tags.push(format!("alias \"{alias}\""));
+                }
+                if !tags.is_empty() {
+                    line.push_str(&format!(" [{}]", tags.join(", ")));
                 }
                 line
             }
@@ -126,6 +168,10 @@ impl Response {
                 None => format!("✗ {} — not a woman", person(m)),
             },
             (Some(Reason::Fictional), Some(m)) => format!("✗ {} — fictional", person(m)),
+            (Some(Reason::NotInCategory), Some(m)) => match &self.reason_detail {
+                Some(detail) => format!("✗ {} — {detail}", person(m)),
+                None => format!("✗ {} — not in the category", person(m)),
+            },
             (Some(Reason::Ambiguous), _) => {
                 let names: Vec<String> = self.candidates.iter().map(person).collect();
                 format!("✗ {} — ambiguous: {}", typed(), names.join(", "))
@@ -182,6 +228,10 @@ mod tests {
             death_year: Some(2020),
             sitelinks: 120,
             wikipedia_url: wikipedia_url("Ruth Bader Ginsburg"),
+            categories: vec!["Lawyer or judge".into()],
+            occupations: vec!["judge".into(), "lawyer".into()],
+            citizenships: vec!["United States".into()],
+            genders: vec!["female".into()],
         }
     }
 
@@ -189,11 +239,14 @@ mod tests {
         Response {
             input: "Ruth Bader Ginsberg".into(),
             normalized: "ruth bader ginsberg".into(),
+            category: Vec::new(),
             verdict: if reason.is_none() { Verdict::Accepted } else { Verdict::Rejected },
             reason,
             reason_detail: None,
             matched_via: matched.as_ref().map(|_| MatchedVia::Fuzzy),
             corrected_from: matched.as_ref().map(|_| "ruth bader ginsberg".into()),
+            matched_name: matched.as_ref().map(|m| m.name.clone()),
+            matched_as: matched.as_ref().map(|_| MatchedAs::Name),
             matched,
             candidates: Vec::new(),
             latency_us: 41,
@@ -206,11 +259,14 @@ mod tests {
         let expected = serde_json::json!({
             "input": "Ruth Bader Ginsberg",
             "normalized": "ruth bader ginsberg",
+            "category": [],
             "verdict": "accepted",
             "reason": null,
             "reason_detail": null,
             "matched_via": "fuzzy",
             "corrected_from": "ruth bader ginsberg",
+            "matched_name": "Ruth Bader Ginsburg",
+            "matched_as": "name",
             "match": {
                 "qid": "Q11116",
                 "name": "Ruth Bader Ginsburg",
@@ -218,7 +274,11 @@ mod tests {
                 "birth_year": 1933,
                 "death_year": 2020,
                 "sitelinks": 120,
-                "wikipedia_url": "https://en.wikipedia.org/wiki/Ruth_Bader_Ginsburg"
+                "wikipedia_url": "https://en.wikipedia.org/wiki/Ruth_Bader_Ginsburg",
+                "categories": ["Lawyer or judge"],
+                "occupations": ["judge", "lawyer"],
+                "citizenships": ["United States"],
+                "genders": ["female"]
             },
             "candidates": [],
             "latency_us": 41
@@ -249,9 +309,21 @@ mod tests {
             response(Some(Reason::Fictional), Some(rbg())).summary_line(),
             "✗ Ruth Bader Ginsburg (Q11116) — fictional"
         );
+        let mut outside = response(Some(Reason::NotInCategory), Some(rbg()));
+        outside.reason_detail = Some("not in category: actor".into());
+        assert_eq!(outside.summary_line(), "✗ Ruth Bader Ginsburg (Q11116) — not in category: actor");
         assert_eq!(
             response(Some(Reason::NotFound), None).summary_line(),
             "✗ \"Ruth Bader Ginsberg\" — not found"
+        );
+        let mut by_alias = response(None, Some(rbg()));
+        by_alias.corrected_from = None;
+        by_alias.matched_via = Some(MatchedVia::Exact);
+        by_alias.matched_name = Some("Notorious RBG".into());
+        by_alias.matched_as = Some(MatchedAs::Alias);
+        assert_eq!(
+            by_alias.summary_line(),
+            "✓ Ruth Bader Ginsburg (Q11116) — American lawyer and jurist, 1933–2020 [exact, alias \"Notorious RBG\"]"
         );
         let mut dated = rbg();
         dated.description = "American lawyer and jurist (1933–2020)".into();

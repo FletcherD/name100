@@ -102,6 +102,8 @@ struct Claims<'a> {
     field_of_work: Vec<Statement<'a>>,
     #[serde(rename = "P97", borrow, default)]
     noble_title: Vec<Statement<'a>>,
+    #[serde(rename = "P279", borrow, default)]
+    subclass_of: Vec<Statement<'a>>,
 }
 
 impl<'a> Claims<'a> {
@@ -273,19 +275,53 @@ pub struct Person {
     pub death_year: Option<i32>,
     pub enwiki_title: String,
     pub attributes: Attributes,
+    /// Every indexed name other than `label`, as written in Wikidata.
+    pub aliases: Vec<String>,
     /// Distinct normalized names, from labels and aliases in the indexed languages.
     pub names: Vec<String>,
+}
+
+/// Something a person's attributes may point at: an occupation, a country,
+/// a sport. Kept for its English label and its place in the class tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub qid: u32,
+    /// English label (the `mul` label when there is no English one).
+    pub label: String,
+    /// Other English names, for finding it as a category ("actress").
+    pub aliases: Vec<String>,
+    /// The classes this is a "subclass of" (`P279`), as numeric QIDs.
+    pub parents: Vec<u32>,
+    /// What this is an "instance of" (`P31`), as numeric QIDs.
+    pub instance_of: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Kept(Box<Person>),
-    /// Not an item, or neither human nor a listed fictional class.
-    NotPerson,
+    /// Not an item, or neither human nor a listed fictional class. Carries a
+    /// [`Reference`] when the entity could be an attribute value: it has a
+    /// label and either a Wikipedia article or a parent class.
+    NotPerson(Option<Box<Reference>>),
     BelowMinSitelinks,
     /// No label or alias in the indexed languages survives normalization.
     NoName,
     ParseError(String),
+}
+
+fn reference(qid: u32, raw: &RawEntity<'_>) -> Option<Box<Reference>> {
+    let label = raw.labels.get("en").or_else(|| raw.labels.get("mul"))?;
+    let parents = numeric_qids(all_item_ids(&raw.claims.subclass_of));
+    if parents.is_empty() && wikipedia_sitelinks(&raw.sitelinks) == 0 {
+        return None;
+    }
+    Some(Box::new(Reference {
+        qid,
+        label: label.value.to_string(),
+        aliases: raw.aliases.get("en").into_iter().flatten().map(|a| a.value.to_string()).collect(),
+        parents,
+        instance_of: numeric_qids(all_item_ids(&raw.claims.instance_of)),
+    }))
 }
 
 /// Parse one entity. `json` is a bare JSON object: the caller strips the
@@ -296,11 +332,11 @@ pub fn extract(json: &str, langs: &[String], min_sitelinks: u32) -> Outcome {
         Err(err) => return Outcome::ParseError(err.to_string()),
     };
     let Some(qid) = raw.id.strip_prefix('Q').and_then(|n| n.parse::<u32>().ok()) else {
-        return Outcome::NotPerson;
+        return Outcome::NotPerson(None);
     };
     let attributes = raw.claims.attributes();
     let Some(kind) = classify(&raw.claims, attributes.get(Attribute::Gender)) else {
-        return Outcome::NotPerson;
+        return Outcome::NotPerson(reference(qid, &raw));
     };
     let sitelinks = wikipedia_sitelinks(&raw.sitelinks);
     if sitelinks < min_sitelinks {
@@ -308,18 +344,31 @@ pub fn extract(json: &str, langs: &[String], min_sitelinks: u32) -> Outcome {
     }
 
     let mut names = Vec::new();
-    let mut label = None;
+    let mut written: Vec<&str> = Vec::new();
     for lang in langs {
         let lang = lang.as_str();
-        if let Some(term) = raw.labels.get(lang) {
-            label.get_or_insert_with(|| term.value.to_string());
-            names.push(normalize(&term.value));
-        }
-        for alias in raw.aliases.get(lang).into_iter().flatten() {
-            names.push(normalize(&alias.value));
+        let label = raw.labels.get(lang).into_iter();
+        for term in label.chain(raw.aliases.get(lang).into_iter().flatten()) {
+            let normalized = normalize(&term.value);
+            if normalized.is_empty() {
+                continue;
+            }
+            names.push(normalized);
+            if !written.contains(&term.value.as_ref()) {
+                written.push(&term.value);
+            }
         }
     }
-    names.retain(|name| !name.is_empty());
+    // The display name is the label in the first language that has one.
+    let label = langs
+        .iter()
+        .find_map(|lang| raw.labels.get(lang.as_str()))
+        .map(|term| term.value.to_string());
+    let aliases: Vec<String> = written
+        .into_iter()
+        .filter(|name| Some(*name) != label.as_deref())
+        .map(str::to_owned)
+        .collect();
     names.sort_unstable();
     names.dedup();
     let Some(label) = label.filter(|_| !names.is_empty()) else {
@@ -336,6 +385,7 @@ pub fn extract(json: &str, langs: &[String], min_sitelinks: u32) -> Outcome {
         death_year: year(&raw.claims.death),
         enwiki_title: raw.sitelinks.get("enwiki").map(|s| s.title.to_string()).unwrap_or_default(),
         attributes,
+        aliases,
         names,
     }))
 }
@@ -385,6 +435,8 @@ mod tests {
         assert_eq!(person.enwiki_title, "Some Title");
         // "Zoë O'Hara" and "ZOE OHARA" normalize to the same key; the German alias is not indexed.
         assert_eq!(person.names, vec!["z ohara", "zoe ohara"]);
+        // The other names, as written, without the label itself.
+        assert_eq!(person.aliases, vec!["Z. O'Hara", "ZOE OHARA"]);
     }
 
     #[test]
@@ -425,7 +477,30 @@ mod tests {
         let json = entity("Q3658341", &[("Q6581072", "normal")], &["enwiki"]);
         assert_eq!(kept(&json).kind, Kind::Fictional);
         let json = entity("Q277759", &[], &["enwiki"]);
-        assert_eq!(extract(&json, &langs(), 1), Outcome::NotPerson);
+        // A non-person with a label and an article is kept as a reference.
+        let Outcome::NotPerson(Some(reference)) = extract(&json, &langs(), 1) else {
+            panic!("expected a reference");
+        };
+        assert_eq!((reference.qid, reference.label.as_str()), (42, "Zoë O'Hara"));
+        assert!(reference.parents.is_empty());
+        assert_eq!(reference.aliases, ["Z. O'Hara", "ZOE OHARA"]);
+        assert_eq!(reference.instance_of, [277759]);
+        // Without an article or a parent class it is not.
+        let json = entity("Q277759", &[], &[]);
+        assert_eq!(extract(&json, &langs(), 1), Outcome::NotPerson(None));
+    }
+
+    #[test]
+    fn classes_report_their_parents() {
+        let json = r#"{"type":"item","id":"Q488205","labels":{"en":{"language":"en","value":"singer-songwriter"}},"claims":{"P279":[
+            {"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":"Q177220"},"type":"wikibase-entityid"}},"rank":"normal"},
+            {"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":"Q753110"},"type":"wikibase-entityid"}},"rank":"preferred"},
+            {"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":"Q1"},"type":"wikibase-entityid"}},"rank":"deprecated"}]},"sitelinks":{}}"#;
+        let Outcome::NotPerson(Some(reference)) = extract(json, &langs(), 1) else {
+            panic!("expected a reference");
+        };
+        assert_eq!(reference.label, "singer-songwriter");
+        assert_eq!(reference.parents, [177220, 753110]);
     }
 
     #[test]

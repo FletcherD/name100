@@ -13,7 +13,7 @@ fn index_dir() -> &'static Path {
     DIR.get_or_init(|| {
         let dump = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample.ndjson");
         let dir = tempfile::tempdir().unwrap();
-        build_index(open_dump(dump.to_str().unwrap()).unwrap(), dir.path(), &BuildOptions::default())
+        build_index(open_dump(dump.to_str().unwrap()).unwrap(), dir.path(), &BuildOptions { category_min_people: 5, ..Default::default() })
             .unwrap();
         dir
     })
@@ -174,6 +174,33 @@ fn matching_settings_come_from_the_environment_and_a_config_file() {
     let server = Server::start(&["--config", config.to_str().unwrap()], &[]);
     assert_eq!(server.lookup("Madona", &[]).0, 1, "fuzzy matching is effectively off");
     assert_eq!(server.lookup("Madonna", &[]).0, 0);
+}
+
+#[test]
+fn category_games_work_through_the_server() {
+    let server = Server::start(&[], &[]);
+    let (code, stdout) = server.lookup("Tom Hanks", &["--category", "occupation:Q33999"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("✓ Tom Hanks"), "{stdout}");
+    let (code, stdout) = server.lookup("Angela Merkel", &["--category", "occupation:Q33999"]);
+    assert_eq!(code, 1);
+    assert_eq!(stdout.trim_end(), "✗ Angela Merkel (Q567) — not in category: actor");
+
+    let output = hundred()
+        .args(["categories", "tennis players", "--server", &server.url])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with("tennis player"), "{stdout}");
+
+    // An unknown category is the server's 400, reported as an error.
+    let output = hundred()
+        .args(["lookup", "Cher", "--server", &server.url, "--category", "occupation:Q1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown category"));
 }
 
 #[test]

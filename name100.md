@@ -17,7 +17,7 @@ The design rests on three rules:
 
 **Phase 1 (this build):** index builder from Wikidata labels and aliases, exact and fuzzy typo matching, lookup server, CLI client, tests, and miss logging.
 
-**Phase 2 (only if the miss data justifies it):** Wikidata search fallback, LLM resolver, learned-alias overlay, negative cache, SQLite. **Out of scope entirely for now:** frontend, game sessions, timers, scoring, leaderboards, multi-instance deployment.
+**Phase 2 (only if the miss data justifies it):** Wikidata search fallback, LLM resolver, learned-alias overlay, negative cache, SQLite. **Out of scope for this server:** game sessions, timers, scoring, leaderboards, multi-instance deployment. The web game itself is specified separately in `name100-frontend.md`; it runs in the browser and uses this server only to judge one name at a time.
 
 ## Tech stack and layout
 
@@ -69,9 +69,9 @@ Rules that the real data forced:
 
 Keep only entities with at least `min_sitelinks` sitelinks (Wikipedia articles in any language; count only Wikipedia sitelinks, not Commons, Wikiquote, Wikisource, Wikispecies or Abstract Wikipedia; default 1). This is the notability bar: it excludes the millions of mass-imported researchers with no articles. Everything else is dropped.
 
-**Fields per record:** QID, display label (the `en` label, else `mul`), short description, sitelink count, birth year (`P569`), death year (`P570`), English Wikipedia title, kind, and the attribute lists below. Aliases are not stored on the record; they live in the name index.
+**Fields per record:** QID, display label (the `en` label, else `mul`), short description, sitelink count, birth year (`P569`), death year (`P570`), English Wikipedia title, kind, the person's other indexed names as written (so a response can say which one matched), and the attribute lists below.
 
-**Attributes.** Every kept person, accepted or not, carries a list of Wikidata item QIDs for each of these properties, so the same index can later serve other category games (see "Generic categories"):
+**Attributes.** Every kept person, accepted or not, carries a list of Wikidata item QIDs for each of these properties, so the same index serves other category games (see "Category games"):
 
 | Attribute | Property | Values kept |
 | --- | --- | --- |
@@ -89,6 +89,10 @@ Keep only entities with at least `min_sitelinks` sitelinks (Wikipedia articles i
 
 The list is defined once, in `crates/core/src/attribute.rs`. The manifest records it, and the server refuses an index built with a different list.
 
+**Labels and occupation categories.** People's attributes are QIDs; to name them, the builder also notes, for every non-person entity with an English label and either a Wikipedia article or a parent class, its label and its "subclass of" (`P279`) links. Labels are spooled to a temporary file during the scan and only those some kept person points at are written to the artifact.
+
+Each occupation held by a kept person is then mapped to the nearest of about two dozen broad categories (Musician, Actor, Athlete, Politician, Writer, Scientist or scholar, ...) by walking up the subclass tree to a category's anchor classes, at most 8 steps: singer-songwriter → singer → musician. The list is in `crates/core/src/category.rs`. At lookup time a person's categories are ranked, the main one first: the occupation named earliest in their description, else royalty, else politician for an office holder, else the category covering most of their occupations. Wikidata does not record a main occupation, so this is a heuristic.
+
 **Which names to index.** Labels and aliases in `en` and `mul` only, to start. `mul` is required: Wikidata increasingly stores a person's name once as a multilingual label instead of per language, so `en` alone would miss people. Make the language list configurable (`--langs`). Adding more languages, or every Latin-script label, is a later decision made after measuring the first full build.
 
 **Normalization** (shared with lookup; lives in `core`):
@@ -104,7 +108,10 @@ The list is defined once, in `crates/core/src/attribute.rs`. The manifest record
 - `names.fst`: normalized name → value. FST keys must be sorted and unique. Most names belong to one record, so the value encodes that record's index directly (top bit clear); shared names set the top bit and point into the posting list instead.
 - `postings.bin`: for each shared name, a list of record indices, ascending (which is most popular first; see below).
 - `records_hot.bin`: fixed-size 8-byte records holding only what matching needs: QID, sitelink count, and the stored kind.
-- `records_cold.bin`: fields read once per returned match: label, description, birth and death years, Wikipedia title, and the attribute lists.
+- `records_cold.bin`: fields read once per returned match: label, description, birth and death years, Wikipedia title, aliases, and the attribute lists.
+- `labels.bin`: English labels of the items people's attributes point at (occupations, countries, sports, ...), so responses can name them.
+- `occupation_categories.bin`: occupation → broad category.
+- `catalogue.bin`: the playable categories (name, other names, head counts) and, for each attribute value, the wider categories it falls under.
 - `manifest.json`: build date, dump date, counts (including people per gender value), sizes, attribute list, schema version.
 
 **Record order.** Sort records by sitelink count, descending, before writing. A record's index is then its popularity rank, so the dominance check compares indices, and the most-guessed people sit together in the first few MB of `records_hot.bin`.
@@ -146,8 +153,11 @@ If the chosen record's kind is `not_woman` or `fictional`, return that rejection
 **Endpoints:**
 
 - `GET /v1/lookup?q=<name>` → verdict JSON (below). Always HTTP 200 for a verdict, including rejections; 400 with `{"error": ...}` for a missing `q`.
+- `GET /v1/categories?q=<text>` → playable categories matching the text (see "Category games").
 - `GET /healthz` → 200 with the loaded index's `manifest.json`.
 - `GET /metrics` → Prometheus text.
+
+**Access.** The game's page is served from a different origin, so `/v1/lookup` answers cross-origin requests from the origins in `cors_origins` (and, by default, from pages on `http://localhost:<port>`). Lookups are rate limited per client address (`rate_limit_per_minute`, default 600, with bursts of a tenth of that); beyond it the answer is 429 with a `Retry-After` header. Behind a reverse proxy, `trust_forwarded_for` takes the client address from `X-Forwarded-For`.
 
 **Response:**
 
@@ -160,6 +170,8 @@ If the chosen record's kind is `not_woman` or `fictional`, return that rejection
   "reason_detail": null,
   "matched_via": "fuzzy",
   "corrected_from": "ruth bader ginsberg",
+  "matched_name": "Ruth Bader Ginsburg",
+  "matched_as": "name",
   "match": {
     "qid": "Q11116",
     "name": "Ruth Bader Ginsburg",
@@ -167,7 +179,11 @@ If the chosen record's kind is `not_woman` or `fictional`, return that rejection
     "birth_year": 1933,
     "death_year": 2020,
     "sitelinks": 120,
-    "wikipedia_url": "https://en.wikipedia.org/wiki/Ruth_Bader_Ginsburg"
+    "wikipedia_url": "https://en.wikipedia.org/wiki/Ruth_Bader_Ginsburg",
+    "categories": ["Lawyer or judge", "Educator"],
+    "occupations": ["judge", "lawyer", "jurist", "university teacher"],
+    "citizenships": ["United States"],
+    "genders": ["female"]
   },
   "candidates": [],
   "latency_us": 41
@@ -176,26 +192,33 @@ If the chosen record's kind is `not_woman` or `fictional`, return that rejection
 
 Field values (the QID and sitelink count above are illustrative):
 
+- `category`: the category ids of the game being played; empty for the original women game (see "Category games")
 - `verdict`: `accepted` | `rejected`
-- `reason`: null when accepted; otherwise `not_a_name`, `not_woman`, `fictional`, `ambiguous`, `not_found`
+- `reason`: null when accepted; otherwise `not_a_name`, `not_woman`, `not_in_category`, `fictional`, `ambiguous`, `not_found`
 - `reason_detail`: a short human-readable explanation, set for `not_woman` (for example `gender is genderfluid`); otherwise null
 - `matched_via`: `exact` | `fuzzy` | null when nothing matched
+- `matched_name`: which of the person's names the guess matched, as written in Wikidata. A guess of "stefani germanotta" gives `matched_name: "Stefani Germanotta"` with `match.name: "Lady Gaga"`. Set whenever `match` is; null otherwise
+- `matched_as`: `name` when `matched_name` is the person's main name, `alias` when it is another name they are known by
+- `match.categories`: broad occupation categories, the main one first (see "Occupation categories"); empty when none apply
+- `match.occupations`, `match.citizenships`, `match.genders`: the person's occupations, countries of citizenship and current gender values, as English labels
 - `candidates`: up to 5 `match` objects, filled only for `ambiguous`
 
 **CLI** (`clap` subcommands of one binary):
 
 ```
-hundred build-index --dump <path> --out <dir> [--langs en,mul] [--min-sitelinks 1] [--fuzzy-min-sitelinks 10]
+hundred build-index --dump <path> --out <dir> [--langs en,mul] [--min-sitelinks 1] [--fuzzy-min-sitelinks 10] [--category-min-people 100]
 hundred serve --index <dir> [--config hundred.toml] [--bind 127.0.0.1:8080]
 hundred lookup "<name>" [--server http://127.0.0.1:8080] [--json]
 hundred lookup "<name>" --local --index <dir>      # in-process, no server
+hundred lookup "<name>" --category occupation:Q33999[,women]
+hundred categories "<text>" [--limit 10] [--server ... | --local --index <dir>]
 ```
 
 `lookup` prints one human-readable line by default, for example `✓ Ruth Bader Ginsburg (Q11116) — American lawyer and jurist, 1933–2020 [fuzzy, corrected]` or `✗ Elon Musk (Q317521) — not a woman: gender is male`. `--json` prints the raw response. Exit code: 0 accepted, 1 rejected, 2 error.
 
 ## Config, testing, and milestones
 
-**Config.** `hundred.toml` (read from the working directory, or `--config <file>`), every key overridable by a `HUNDRED_<KEY>` environment variable. Flags beat the environment, which beats the file. Keys: `index`, `bind`, `langs`, `min_sitelinks`, `dominance_ratio`, `mononym_min_sitelinks`, `fuzzy_min_sitelinks`, `fuzzy_min_len`, `fuzzy_transpositions`, `max_input_chars`, `max_candidates`. Unknown keys are an error. `hundred.example.toml` lists them with their defaults.
+**Config.** `hundred.toml` (read from the working directory, or `--config <file>`), every key overridable by a `HUNDRED_<KEY>` environment variable. Flags beat the environment, which beats the file. Keys: `index`, `bind`, `langs`, `min_sitelinks`, `dominance_ratio`, `mononym_min_sitelinks`, `fuzzy_min_sitelinks`, `category_min_people`, `fuzzy_min_len`, `fuzzy_transpositions`, `max_input_chars`, `max_candidates`, `cors_origins`, `cors_allow_localhost`, `rate_limit_per_minute`, `trust_forwarded_for`. Unknown keys are an error. `hundred.example.toml` lists them with their defaults.
 
 **Observability.** `serve` writes JSON logs to stdout, including the miss events above (target `hundred::miss`, fields `reason` and `normalized`); `scripts/rank_misses.py` ranks them. `/metrics` exports `hundred_lookups_total` by `verdict`, `reason` and `matched_via`, and the histograms `hundred_lookup_seconds` and `hundred_lookup_stage_seconds` (by `stage`: guard, exact, fuzzy, resolve).
 
@@ -231,16 +254,46 @@ Also required: property tests that normalization is idempotent, and a criterion 
 - [ ] Whether to index more languages than en + mul, after measuring the first full build.
 - [ ] Minimum sitelinks for acceptance. Default is 1; raising it makes the game harder and the index smaller.
 
-## Generic categories (future)
+## Category games
 
-The game may later run with other categories: name 100 trans people, actors, Nobel laureates, tennis players. Phase 1 does not build this, but the index is shaped for it:
+The same index plays "name 100 actors", "name 100 tennis players" or "name 100 women scientists". The player types what they want into a search box and picks from the categories the index can judge.
 
-- Name matching and the dominance rule are the same for every category. They run over all humans, so the most famous bearer of a name is always the one chosen.
-- Only the last step differs. Instead of "is the chosen person's kind `woman`", the server tests the chosen person's stored attributes against the category.
-- A category is a set of values for one attribute, not a single value: "actor" has to list actor, film actor, television actor, stage actor and so on. Those sets are per-game configuration, still to be designed.
-- Birth and death years and the sitelink count are stored too, so "born before 1900" or a hard mode with a fame ceiling need nothing new.
+**What a category is.** One value of one attribute: occupation *actor*, citizenship *France*, sport *tennis*, instrument *guitar*. A person is in it if they hold that value or a more specific one, so a *film actor* is an *actor*. `women` and `men` are built in. A game combines at most two (`women` and `scientist`), and a person must be in both.
 
-Not stored, deliberately: sexual orientation, ethnic group, religion and medical conditions (sparse and sensitive; a wrong rejection is worse than for an occupation), and place of birth (stored in Wikidata as a town, so "born in Texas" would need a place hierarchy). Adding an attribute is a few lines in `crates/core/src/attribute.rs` plus an index rebuild.
+**How "more specific" is known.** From Wikidata's class tree, read during the build:
+
+| Attributes | Wider categories come from |
+| --- | --- |
+| occupation, sport, genre, instrument, field of work, noble title | "subclass of" (`P279`), up to 8 steps: film actor → actor → performing artist |
+| award, position, event | what the value is an instance of (`P31`), then "subclass of": Nobel Prize in Physics → Nobel Prize |
+| citizenship, gender | nothing; the value stands alone |
+
+**The catalogue.** The builder counts the people in every category and keeps those with at least `category_min_people` (default 100), each with its English name, the other names Wikidata gives it (so "actress" finds *actor*), and how many people and how many women are in it. The class tree also runs up into abstractions nobody would play ("agent", "material object"), so a wider category is kept only if people hold it outright (*musician*) or it is the family that held values are instances of (*Nobel Prize*), and never if it takes in more than half the people who have that attribute at all.
+
+**Searching it.** `GET /v1/categories?q=<text>&limit=<n>` returns matches, best first: the category whose name is exactly the text, then names starting with it, then names with a word starting with it, then names containing it; bigger categories first within each, and a category's own name ahead of its other names. Plurals find singulars ("actors" → *actor*). An empty `q` lists the biggest. Default 10 results, at most 50. `GET /v1/categories?ids=<id>[,<id>...]` skips the search and returns exactly those categories, in the order asked, leaving out any id the catalogue does not hold; the game uses it to name a category it was linked to.
+
+```json
+{"categories": [
+  {"id": "occupation:Q33999", "label": "actor", "kind": "occupation", "people": 412000, "women": 151000}
+]}
+```
+
+(Counts illustrative.) The `id` is stable across builds: `women`, `men`, or `<attribute>:<QID>` with attribute one of `gender`, `occupation`, `citizenship`, `award`, `position`, `sport`, `event`, `genre`, `instrument`, `field`, `title`.
+
+**Playing it.** `GET /v1/lookup?q=<name>&category=<id>[,<id>]`. An unknown id, or more than two, is a 400. The response echoes the ids in `category`. Without the parameter the game is the original one, and nothing about it changes.
+
+**Resolution in a category game** differs from the women game in one way: a shared name is resolved among the people *in the category* only. In a game of actors, a name borne by a famous athlete and a lesser-known actor means the actor. So:
+
+1. Find the bearers of the name (exact, else one-edit typo correction), as always.
+2. Keep those in every category of the game.
+3. If any remain, apply the dominance and mononym rules to them: one clear winner is `accepted`; otherwise `ambiguous`, listing only people in the category.
+4. If none remain, reject with the name's most famous bearer as `match`: `fictional` if that is a character, otherwise `not_in_category`, with `reason_detail` saying which category failed ("not in category: actor", or "gender is male" when `women` failed).
+
+Fictional characters are in no category.
+
+**What cannot be a category.** Anything Wikidata does not record as one of the stored attributes: where someone was born or lives (stored as a town, with no region tree here), physical traits, "one-hit wonders". Sexual orientation, ethnic group, religion and medical conditions are left out deliberately: they are sparse and sensitive, and a wrong rejection is worse than for an occupation. Adding an attribute is a few lines in `crates/core/src/attribute.rs` plus an index rebuild.
+
+**Later, maybe.** A language model could turn free text ("90s British pop singers") into a combination of catalogue categories, with the data still deciding who counts. Dates ("born before 1900") would need a third kind of term; the years are stored.
 
 ## Phase 2 (only if needed)
 

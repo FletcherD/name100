@@ -78,6 +78,23 @@ impl Attribute {
         }
     }
 
+    /// A short stable name, used in category ids: `occupation:Q33999`.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Attribute::Gender => "gender",
+            Attribute::Occupation => "occupation",
+            Attribute::Citizenship => "citizenship",
+            Attribute::Award => "award",
+            Attribute::Position => "position",
+            Attribute::Sport => "sport",
+            Attribute::Event => "event",
+            Attribute::Genre => "genre",
+            Attribute::Instrument => "instrument",
+            Attribute::FieldOfWork => "field",
+            Attribute::NobleTitle => "title",
+        }
+    }
+
     /// The property IDs of every attribute, in on-disk order.
     pub fn properties() -> Vec<String> {
         Attribute::ALL.iter().map(|a| a.property().to_owned()).collect()

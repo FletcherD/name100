@@ -1,7 +1,9 @@
 //! Index builder: Wikidata entity dump in, index artifact out.
 
+mod catalogue;
 pub mod entity;
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -10,9 +12,10 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use hundred_core::artifact::{
     ColdRecord, Counts, HotRecord, Kind, Manifest, Sizes, COLD_FILE, COLD_MAGIC, HOT_FILE,
-    FUZZY_NAMES_FILE, HOT_MAGIC, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC,
+    CATALOGUE_FILE, CATEGORIES_FILE, CATEGORIES_MAGIC, FUZZY_NAMES_FILE, HOT_MAGIC, LABELS_FILE, MAGIC_LEN, MANIFEST_FILE, NAMES_FILE, POSTINGS_FILE, POSTINGS_MAGIC,
     SCHEMA_VERSION, SHARED_NAME_BIT,
 };
+use hundred_core::category::{anchor_category, category_labels, CATEGORIES, MAX_DEPTH};
 use hundred_core::Attribute;
 use rayon::prelude::*;
 
@@ -31,6 +34,8 @@ pub struct BuildOptions {
     /// Sitelinks a person needs before a misspelling is corrected to them.
     /// Exact matches are not affected.
     pub fuzzy_min_sitelinks: u32,
+    /// People a category needs before it is offered as a game.
+    pub category_min_people: u32,
     /// Date of the dump, `YYYY-MM-DD`, recorded in the manifest.
     pub dump_date: Option<String>,
 }
@@ -41,6 +46,7 @@ impl Default for BuildOptions {
             langs: vec!["en".into(), "mul".into()],
             min_sitelinks: 1,
             fuzzy_min_sitelinks: 10,
+            category_min_people: 100,
             dump_date: None,
         }
     }
@@ -83,7 +89,8 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
     }
     let started = Instant::now();
     let mut counts = Counts::default();
-    let mut people = read_people(dump, options, &mut counts)?;
+    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let Scan { mut people, mut subclass_links } = scan_dump(dump, out, options, &mut counts)?;
 
     // Most sitelinks first, so a record's index is its popularity rank. QID
     // breaks ties to keep builds of the same dump byte-identical.
@@ -92,8 +99,11 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
         bail!("{} records do not fit a 32-bit record index", people.len());
     }
 
-    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     write_records(&people, out, &mut counts)?;
+    subclass_links.par_sort_unstable();
+    subclass_links.dedup();
+    catalogue::write(&people, &subclass_links, options.category_min_people, out, &mut counts)?;
+    write_occupation_categories(&people, &subclass_links, out, &mut counts)?;
     // People are sorted by sitelinks, so the well-known ones are a prefix.
     let well_known = people.partition_point(|p| p.sitelinks >= options.fuzzy_min_sitelinks);
     write_names(&mut people, well_known as u32, out, &mut counts)?;
@@ -105,10 +115,19 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
         postings_bin: size(POSTINGS_FILE)?,
         records_hot_bin: size(HOT_FILE)?,
         records_cold_bin: size(COLD_FILE)?,
+        labels_bin: size(LABELS_FILE)?,
+        occupation_categories_bin: size(CATEGORIES_FILE)?,
+        catalogue_bin: size(CATALOGUE_FILE)?,
         total: 0,
     };
-    sizes.total =
-        sizes.names_fst + sizes.names_fuzzy_fst + sizes.postings_bin + sizes.records_hot_bin + sizes.records_cold_bin;
+    sizes.total = sizes.names_fst
+        + sizes.names_fuzzy_fst
+        + sizes.postings_bin
+        + sizes.records_hot_bin
+        + sizes.records_cold_bin
+        + sizes.labels_bin
+        + sizes.occupation_categories_bin
+        + sizes.catalogue_bin;
 
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
@@ -116,8 +135,10 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
         dump_date: options.dump_date.clone(),
         langs: options.langs.clone(),
         attributes: Attribute::properties(),
+        occupation_categories: category_labels(),
         min_sitelinks: options.min_sitelinks,
         fuzzy_min_sitelinks: options.fuzzy_min_sitelinks,
+        category_min_people: options.category_min_people,
         counts,
         sizes,
         build_seconds: (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
@@ -129,12 +150,21 @@ pub fn build_index(dump: impl BufRead, out: &Path, options: &BuildOptions) -> Re
     Ok(manifest)
 }
 
-fn read_people(
+struct Scan {
+    people: Vec<Person>,
+    /// (class, parent class) pairs from "subclass of" statements.
+    subclass_links: Vec<(u32, u32)>,
+}
+
+fn scan_dump(
     mut dump: impl BufRead,
+    out: &Path,
     options: &BuildOptions,
     counts: &mut Counts,
-) -> Result<Vec<Person>> {
+) -> Result<Scan> {
     let mut people = Vec::new();
+    let mut subclass_links: Vec<(u32, u32)> = Vec::new();
+    let mut spool = create(out, catalogue::SPOOL)?;
     let mut batch: Vec<String> = Vec::with_capacity(BATCH_LINES);
     let mut first_error: Option<String> = None;
     loop {
@@ -159,7 +189,14 @@ fn read_people(
             counts.entities_read += 1;
             match outcome {
                 Outcome::Kept(person) => people.push(*person),
-                Outcome::NotPerson => counts.dropped_not_person += 1,
+                Outcome::NotPerson(reference) => {
+                    counts.dropped_not_person += 1;
+                    if let Some(reference) = reference {
+                        writeln!(spool, "{}", catalogue::spool_line(&reference))?;
+                        subclass_links
+                            .extend(reference.parents.iter().map(|&parent| (reference.qid, parent)));
+                    }
+                }
                 Outcome::BelowMinSitelinks => counts.dropped_below_min_sitelinks += 1,
                 Outcome::NoName => counts.dropped_no_name += 1,
                 Outcome::ParseError(message) => {
@@ -172,7 +209,64 @@ fn read_people(
     if let Some(message) = first_error {
         eprintln!("warning: {} unparseable line(s); first error: {message}", counts.parse_errors);
     }
-    Ok(people)
+    spool.flush()?;
+    counts.subclass_links = subclass_links.len() as u64;
+    Ok(Scan { people, subclass_links })
+}
+
+/// Map every occupation held by a kept person to its nearest category, by
+/// walking up the subclass tree, and write the map.
+fn write_occupation_categories(
+    people: &[Person],
+    subclass_links: &[(u32, u32)],
+    out: &Path,
+    counts: &mut Counts,
+) -> Result<()> {
+    let mut occupations: Vec<u32> = people
+        .iter()
+        .flat_map(|person| person.attributes.get(Attribute::Occupation))
+        .copied()
+        .collect();
+    occupations.par_sort_unstable();
+    occupations.dedup();
+
+    let mut file = create(out, CATEGORIES_FILE)?;
+    file.write_all(CATEGORIES_MAGIC)?;
+    counts.occupations = occupations.len() as u64;
+    for occupation in occupations {
+        if let Some(category) = nearest_category(occupation, subclass_links) {
+            file.write_all(&occupation.to_le_bytes())?;
+            file.write_all(&(category as u32).to_le_bytes())?;
+            counts.occupations_categorized += 1;
+        }
+    }
+    file.flush()?;
+    Ok(())
+}
+
+/// The category whose anchor is fewest "subclass of" steps above `class`;
+/// between equally near ones, the earlier in [`CATEGORIES`]. `links` is
+/// sorted (class, parent) pairs.
+fn nearest_category(class: u32, links: &[(u32, u32)]) -> Option<u8> {
+    debug_assert!(CATEGORIES.len() <= u8::MAX as usize);
+    let parents = |class: u32| {
+        let start = links.partition_point(|&(child, _)| child < class);
+        links[start..].iter().take_while(move |&&(child, _)| child == class).map(|&(_, p)| p)
+    };
+    let mut seen: HashSet<u32> = HashSet::from([class]);
+    let mut level = vec![class];
+    for _ in 0..=MAX_DEPTH {
+        if let Some(category) = level.iter().filter_map(|&qid| anchor_category(qid)).min() {
+            return Some(category);
+        }
+        let next: Vec<u32> =
+            level.iter().flat_map(|&qid| parents(qid)).filter(|&qid| seen.insert(qid)).collect();
+        if next.is_empty() {
+            return None;
+        }
+        level = next;
+    }
+    None
 }
 
 /// The JSON object on a dump line, without the array syntax around it. The
@@ -218,6 +312,7 @@ fn write_records(people: &[Person], out: &Path, counts: &mut Counts) -> Result<(
         death_year: person.death_year,
         enwiki_title: person.enwiki_title.clone(),
         attributes: person.attributes.clone(),
+        aliases: person.aliases.clone(),
     });
     let mut cold = create(out, COLD_FILE)?;
     cold.write_all(COLD_MAGIC)?;
@@ -289,7 +384,7 @@ fn write_names(
     Ok(())
 }
 
-fn create(dir: &Path, name: &str) -> Result<BufWriter<File>> {
+pub(crate) fn create(dir: &Path, name: &str) -> Result<BufWriter<File>> {
     let path = dir.join(name);
     let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
     Ok(BufWriter::with_capacity(1 << 20, file))
@@ -314,6 +409,40 @@ mod tests {
         assert_eq!(entity_json("\n"), None);
         assert_eq!(entity_json("{\"id\":\"Q1\"},\n"), Some("{\"id\":\"Q1\"}"));
         assert_eq!(entity_json("{\"id\":\"Q1\"}\n"), Some("{\"id\":\"Q1\"}"));
+    }
+
+    #[test]
+    fn occupations_take_the_nearest_category_up_the_class_tree() {
+        const MUSICIAN: u32 = 639669;
+        const ACTOR: u32 = 33999;
+        const WRITER: u32 = 36180;
+        let (singer, songwriter, singer_songwriter, tv_actor, plumber, deep) = (1, 2, 3, 4, 5, 6);
+        let mut links = vec![
+            (singer, MUSICIAN),
+            (songwriter, WRITER),
+            (singer_songwriter, singer),
+            (singer_songwriter, songwriter),
+            (tv_actor, ACTOR),
+            // Classes can loop; the walk must still end.
+            (plumber, 7),
+            (7, plumber),
+        ];
+        // A chain longer than MAX_DEPTH never reaches its anchor.
+        links.extend((0..MAX_DEPTH as u32 + 1).map(|i| (deep + 100 + i, deep + 101 + i)));
+        links.push((deep, deep + 100));
+        links.push((deep + 101 + MAX_DEPTH as u32, MUSICIAN));
+        links.sort_unstable();
+
+        let label = |class| nearest_category(class, &links).map(|id| CATEGORIES[id as usize].label);
+        assert_eq!(label(MUSICIAN), Some("Musician"));
+        assert_eq!(label(singer), Some("Musician"));
+        assert_eq!(label(tv_actor), Some("Actor"));
+        // Two steps from both Musician and Writer: the earlier category wins.
+        assert_eq!(label(singer_songwriter), Some("Musician"));
+        assert_eq!(label(songwriter), Some("Writer"));
+        assert_eq!(label(plumber), None);
+        assert_eq!(label(deep), None);
+        assert_eq!(label(999_999), None);
     }
 
     #[test]

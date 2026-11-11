@@ -9,6 +9,19 @@
 # Address `serve` listens on.
 bind = "127.0.0.1:8080"
 
+# --- serve: who may call it ---
+# Origins whose pages may call the API from a browser, exactly as the browser
+# sends them. "*" allows any origin.
+cors_origins = []            # e.g. ["https://yourname.github.io"]
+# Also allow pages served from http://localhost:<port>, for development.
+cors_allow_localhost = true
+# Lookups one client address may make per minute (bursts of a tenth of this
+# are let through at once). 0 turns the limit off.
+rate_limit_per_minute = 600
+# Take the client address from X-Forwarded-For. Turn on only behind a reverse
+# proxy that sets it; otherwise clients can forge it.
+trust_forwarded_for = false
+
 # --- build-index ---
 # Languages whose labels and aliases are indexed.
 langs = ["en", "mul"]
@@ -17,6 +30,8 @@ min_sitelinks = 1
 # Articles a person needs before a misspelling is corrected to them. Exact
 # matches are unaffected. Baked into the index: changing it means rebuilding.
 fuzzy_min_sitelinks = 10
+# People a category ("actor", "France") needs before it is offered as a game.
+category_min_people = 100
 
 # --- matching ---
 # A shared name resolves to its most famous bearer only if they have at least

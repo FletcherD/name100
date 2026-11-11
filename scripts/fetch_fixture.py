@@ -9,6 +9,10 @@ Sources:
                             these names (via the query service), so the fixture
                             holds the real confusable neighbours of mononyms.
 
+It also fetches the items those people's attributes point at (occupations,
+countries, sports, ...) and the classes above their occupations, so the
+fixture can label attributes and categorize occupations like a real dump.
+
 Each entity is trimmed to the fields the builder reads, plus a few it must
 ignore, and written one JSON object per line: the same shape as a line of the
 Wikidata JSON dump, minus the dump's enclosing "[" / "]" and trailing commas.
@@ -77,12 +81,12 @@ def fetch_by_titles(titles):
     return entities, missing
 
 
-def fetch_by_ids(qids):
+def fetch_by_ids(qids, props="labels|aliases|descriptions|claims|sitelinks"):
     entities = {}
     for batch in chunks(qids, 50):
         data = get_json(API, {
             "action": "wbgetentities", "format": "json", "ids": "|".join(batch),
-            "props": "labels|aliases|descriptions|claims|sitelinks",
+            "props": props,
         })
         for key, ent in data.get("entities", {}).items():
             if "missing" not in ent:
@@ -112,6 +116,71 @@ def humans_named(names):
         if qid not in bucket and len(bucket) < MAX_PER_SHARED_NAME:
             bucket.append(qid)
     return out
+
+
+# Attributes whose values are fetched too, so the fixture can label them.
+# Awards, positions and events are left out: thousands of items, and nothing
+# shows their labels yet.
+LABELLED = ("P21", "P106", "P27", "P641", "P136", "P1303", "P101", "P97")
+# How far up the "subclass of" tree to follow occupations.
+ANCESTOR_LEVELS = 8
+
+
+def item_values(ent, prop):
+    out = []
+    for st in ent.get("claims", {}).get(prop, []):
+        value = st.get("mainsnak", {}).get("datavalue", {}).get("value")
+        if isinstance(value, dict) and "id" in value and st.get("rank") != "deprecated":
+            out.append(value["id"])
+    return out
+
+
+def fetch_references(people):
+    """The items people's attributes point at, plus the ancestors of their
+    occupations, trimmed to a label, aliases, classes and one sitelink."""
+    wanted = {q for ent in people for prop in LABELLED for q in item_values(ent, prop)}
+    occupations = {q for ent in people for q in item_values(ent, "P106")}
+    refs, frontier = {}, set(wanted)
+    for level in range(ANCESTOR_LEVELS + 1):
+        todo = sorted(frontier - refs.keys(), key=lambda q: int(q[1:]))
+        if not todo:
+            break
+        print(f"  references, level {level}: {len(todo)}", file=sys.stderr)
+        fetched = fetch_by_ids(todo, props="labels|aliases|claims|sitelinks")
+        refs.update(fetched)
+        # Only occupations are followed upwards.
+        climbing = occupations if level == 0 else set(fetched)
+        frontier = {p for q in climbing if q in refs for p in item_values(refs[q], "P279")}
+    return [trim_reference(ent) for ent in refs.values()]
+
+
+def trim_reference(ent):
+    claims = {}
+    for prop in ("P279", "P31"):
+        statements = [
+            {
+                "mainsnak": {
+                    "snaktype": st["mainsnak"].get("snaktype"),
+                    "property": prop,
+                    **({"datavalue": st["mainsnak"]["datavalue"]} if "datavalue" in st["mainsnak"] else {}),
+                },
+                "type": "statement",
+                "rank": st.get("rank", "normal"),
+            }
+            for st in ent.get("claims", {}).get(prop, [])
+        ]
+        if statements:
+            claims[prop] = statements
+    links = ent.get("sitelinks", {})
+    site = "enwiki" if "enwiki" in links else next((s for s in sorted(links) if s.endswith("wiki")), None)
+    return {
+        "type": ent.get("type", "item"),
+        "id": ent["id"],
+        "labels": {k: v for k, v in ent.get("labels", {}).items() if k in ("en", "mul")},
+        "aliases": {k: v for k, v in ent.get("aliases", {}).items() if k == "en"},
+        "claims": claims,
+        "sitelinks": {site: {"site": site, "title": links[site]["title"]}} if site else {},
+    }
 
 
 def trim(ent):
@@ -162,11 +231,15 @@ def main():
     entities.update(fetch_by_ids(extra))
 
     ordered = sorted(entities.values(), key=lambda e: int(e["id"][1:]))
+    references = [r for r in fetch_references(ordered) if r["id"] not in entities]
+    references.sort(key=lambda e: int(e["id"][1:]))
     with OUT.open("w", encoding="utf-8") as fh:
         for ent in ordered:
             fh.write(json.dumps(trim(ent), ensure_ascii=False, separators=(",", ":")) + "\n")
+        for ent in references:
+            fh.write(json.dumps(ent, ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    print(f"wrote {len(ordered)} entities to {OUT} ({OUT.stat().st_size / 1e6:.2f} MB)", file=sys.stderr)
+    print(f"wrote {len(ordered)} people and {len(references)} referenced items to {OUT} ({OUT.stat().st_size / 1e6:.2f} MB)", file=sys.stderr)
     if missing:
         print("titles with no Wikidata item (check spelling / redirects):", file=sys.stderr)
         for title in missing:

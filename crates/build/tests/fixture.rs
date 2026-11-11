@@ -59,6 +59,8 @@ fn manifest_counts_are_consistent() {
     let c = &manifest.counts;
     assert_eq!(c.parse_errors, 0);
     assert!(c.records >= 300, "fixture should hold about 300 people, has {}", c.records);
+    assert!(c.dropped_not_person > 1000, "the fixture also holds occupations, countries, ...");
+    assert!(!path.join("labels.tmp").exists(), "the label spool is removed");
     assert_eq!(c.records, index.len() as u64);
     assert_eq!(c.records, c.women + c.not_women + c.fictional);
     assert_eq!(
@@ -224,7 +226,7 @@ fn builds_are_deterministic() {
     let dir = tempfile::tempdir().unwrap();
     let options = BuildOptions::default();
     build_index(open_dump(&fixture()).unwrap(), dir.path(), &options).unwrap();
-    for name in [NAMES_FILE, POSTINGS_FILE, HOT_FILE, COLD_FILE] {
+    for name in [NAMES_FILE, POSTINGS_FILE, HOT_FILE, COLD_FILE, "labels.bin", "occupation_categories.bin", "names_fuzzy.fst"] {
         assert_eq!(
             std::fs::read(first.path.join(name)).unwrap(),
             std::fs::read(dir.path().join(name)).unwrap(),
@@ -356,5 +358,43 @@ fn an_index_built_with_other_attributes_is_refused() {
     manifest["attributes"].as_array_mut().unwrap().pop();
     std::fs::write(&manifest_path, manifest.to_string()).unwrap();
     let error = Index::open(dir.path()).err().expect("mismatched attributes must not load");
+    assert!(error.to_string().contains("rebuild the index"), "{error}");
+}
+
+#[test]
+fn attribute_values_are_labelled_and_occupations_categorized() {
+    use hundred_core::category::category_label;
+    let index = &built().index;
+    // Labels of things people's attributes point at.
+    assert_eq!(index.label(30), Some("United States"));
+    assert_eq!(index.label(33999), Some("actor"));
+    assert_eq!(index.label(847), Some("tennis"));
+    // Items nobody points at are not kept, even though the dump has them.
+    assert_eq!(index.label(215627), None, "\"person\" is only an ancestor class");
+    assert_eq!(index.label(999_999_999), None);
+
+    let category = |occupation: u32| index.occupation_category(occupation).and_then(category_label);
+    assert_eq!(category(33999), Some("Actor"));
+    assert_eq!(category(10800557), Some("Actor"), "film actor is a subclass of actor");
+    assert_eq!(category(488205), Some("Musician"), "singer-songwriter → singer → musician");
+    assert_eq!(category(10833314), Some("Athlete"), "tennis player");
+    assert_eq!(category(82955), Some("Politician"));
+    assert_eq!(category(169470), Some("Scientist or scholar"), "physicist");
+    assert_eq!(category(30), None, "a country is not an occupation");
+}
+
+#[test]
+fn an_index_built_with_other_categories_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(&built().path).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let manifest_path = dir.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["occupation_categories"].as_array_mut().unwrap().swap(0, 1);
+    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    let error = Index::open(dir.path()).err().expect("mismatched categories must not load");
     assert!(error.to_string().contains("rebuild the index"), "{error}");
 }

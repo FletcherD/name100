@@ -16,7 +16,7 @@ fn matcher() -> (Matcher, Option<tempfile::TempDir>) {
         None => {
             let dump = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample.ndjson");
             let dir = tempfile::tempdir().unwrap();
-            build_index(open_dump(dump.to_str().unwrap()).unwrap(), dir.path(), &BuildOptions::default())
+            build_index(open_dump(dump.to_str().unwrap()).unwrap(), dir.path(), &BuildOptions { category_min_people: 5, ..Default::default() })
                 .unwrap();
             (dir.path().to_owned(), Some(dir))
         }
