@@ -6,8 +6,9 @@
 const sameHost =
   typeof location === "undefined" ? "http://127.0.0.1:8080" : `http://${location.hostname}:8080`;
 
+// An empty value, as an unset variable gives in CI, counts as not set.
 export const API_BASE: string = (
-  (import.meta.env.VITE_API_BASE as string | undefined) ?? sameHost
+  (import.meta.env.VITE_API_BASE as string | undefined) || sameHost
 ).replace(/\/+$/, "");
 
 /** A lookup that takes longer than this counts as failed. */

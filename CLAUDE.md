@@ -79,6 +79,7 @@ lbzip2 -dc data/wikidata-*-all.json.bz2 | cargo run --release -p hundred-cli -- 
 - `serve` prints `hundred: listening on http://ADDR` as its first stderr line; tests bind to port 0 and parse it. Keep it first.
 - Server metrics use a per-app recorder (`metrics::with_local_recorder`), not a global one, so tests can run several apps.
 - The game finds the server through `VITE_API_BASE`; unset, it is port 8080 on the host that served the page. The Vite port is fixed at 5173. To play from another machine on the network: `npm run dev:lan` in `web/`, and `HUNDRED_CORS_ORIGINS=http://<this-host-ip>:5173 hundred serve --bind 0.0.0.0:8080 ...`.
+- `.github/workflows/pages.yml` tests and builds `web/` and deploys it to GitHub Pages on pushes to `main` that touch `web/`. It builds with `VITE_API_BASE` from the repository variable `LOOKUP_API_BASE`; until that is set to the lookup server's HTTPS address, the published page loads but says it can't reach the server.
 - The game saves on `pagehide`, so a browser test that writes local storage and then navigates has its write overwritten; seed storage before the page loads instead.
 - The rate limit lets 60 lookups through at once and then 10 a second. A script replaying names faster than that gets 429s, which the game reports as "Couldn't check that".
 - The partial index's catalogue is thin ("actors" does not find *actor*) and most country labels are missing, so the category search and the countries chart look odd there. That is the partial dump, not the game.

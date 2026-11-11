@@ -385,7 +385,8 @@ async function refreshCategories(): Promise<void> {
     saveGame(mine);
     drawTitle();
   } catch {
-    // The server is away; the first guess will say so.
+    // Say so before the player's first guess fails.
+    if (mine === game && message.childNodes.length === 0) setMessage(["Can't reach the lookup server."]);
   }
 }
 
