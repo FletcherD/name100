@@ -8,7 +8,7 @@
 | --- | --- |
 | 1. Builder on the fixture | done |
 | 2. Builder on the full dump | not started; needs the dump in `data/` |
-| 3. Matching, `lookup --local`, golden tests | not started |
+| 3. Matching, `lookup --local`, golden tests | done against the fixture; latency on a full index still to measure |
 | 4. Server, HTTP API, `lookup` over HTTP | not started |
 
 ## What exists
@@ -19,16 +19,20 @@
   - `attribute.rs`: the per-person attribute list (gender, occupation, awards, ...).
   - `gender.rs`: accepted gender values and the "gender is ..." rejection text.
   - `index.rs`: `Index::open`, exact name lookup, hot and cold record access.
+  - `matcher.rs`: `Matcher::lookup`, the pipeline (input guard, exact, fuzzy, resolution rule) and `MatchConfig`.
+  - `verdict.rs`: the `Response` JSON shape and the one-line CLI summary.
 - `crates/build` (`hundred-build`)
   - `entity.rs`: one dump line → `Person` or a drop reason; classification rules.
   - `lib.rs`: streaming build, artifact writer, manifest.
   - `tests/fixture.rs`: builds the fixture and reads the artifact back.
-- `crates/cli` (`hundred-cli`, binary `hundred`): `build-index` only so far.
+- `crates/cli` (`hundred-cli`, binary `hundred`): `build-index` and `lookup --local`.
+  - `tests/golden.rs`: the spec's golden table, through the matcher and through the binary.
+  - `benches/lookup.rs`: criterion benchmark; set `HUNDRED_BENCH_INDEX` to bench a real index.
 - `fixtures/sample.ndjson`: about 375 real Wikidata entities; `fixtures/titles.txt` lists them.
 - `scripts/fetch_fixture.py`: regenerates the fixture from live Wikidata (manual, needs network).
 - `scripts/download_dump.sh`: resumable download of the full dump into `data/`.
 
-Not built yet: `crates/server`, the `serve` and `lookup` subcommands, fuzzy matching, the resolution rule, config file, metrics, miss logging.
+Not built yet: `crates/server`, the `serve` subcommand, `lookup` against a server, config file, metrics, miss logging.
 
 ## Commands
 
@@ -36,6 +40,8 @@ Not built yet: `crates/server`, the `serve` and `lookup` subcommands, fuzzy matc
 cargo test                      # everything runs against the fixture, no network
 cargo clippy --all-targets      # kept warning-free
 cargo run --release -p hundred-cli -- build-index --dump fixtures/sample.ndjson --out index/fixture
+cargo run --release -p hundred-cli -- lookup "Ruth Bader Ginsberg" --local --index index/fixture
+cargo bench -p hundred-cli --bench lookup
 lbzip2 -dc data/wikidata-*-all.json.bz2 | cargo run --release -p hundred-cli -- build-index --dump - --out index/full --dump-date YYYY-MM-DD
 ```
 
@@ -57,4 +63,9 @@ lbzip2 -dc data/wikidata-*-all.json.bz2 | cargo run --release -p hundred-cli -- 
 - Gender classification uses best-ranked statements only; deprecated ones never count.
 - Fictional is decided by a list of character classes, checked before human.
 - The mononym sitelink threshold applies even when a single-token name has only one record.
+- Fuzzy search uses the `levenshtein_automata` crate, not `fst`'s `levenshtein` feature: the latter took 1–18 ms per two-edit query, over the 1 ms p99 budget.
+
+## Measured so far (fixture index, in-process)
+
+Exact lookups take about 1 µs, one-edit fuzzy about 20 µs, two-edit fuzzy 60–120 µs. Nearly all the fuzzy cost is building the per-query automaton, so it should not grow much on the full index, but that is unmeasured.
 - Eleven attributes are stored per person so the index can serve other category games later.

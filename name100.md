@@ -27,7 +27,8 @@ One Rust binary, `hundred`, with subcommands. Use these crates unless there is a
 | --- | --- |
 | Async runtime, HTTP server | `tokio`, `axum` |
 | CLI | `clap` (derive) |
-| Name index, fuzzy search | `fst` (with `levenshtein` feature), mmapped via `memmap2` |
+| Name index | `fst`, read into memory |
+| Fuzzy search | `levenshtein_automata` DFAs run over the `fst` (not `fst`'s own `levenshtein` feature, which measured 1–18 ms per two-edit query against roughly 0.1 ms) |
 | Record store | flat binary files in a small hand-written format (see `crates/core/src/artifact.rs`) |
 | Normalization | `unicode-normalization`, `caseless` |
 | Dump parsing | `serde_json` streaming per line, `bzip2` or `flate2` |
@@ -117,7 +118,7 @@ Each lookup normalizes the input, then runs these stages in order and stops at t
 
 1. **Input guard.** Reject empty input, input over 100 characters, or input with no letters, as `not_a_name`.
 2. **Exact match** against all indexed labels and aliases. Get the posting list and apply the resolution rule below.
-3. **Fuzzy match**, only if there was no exact hit, using an FST Levenshtein automaton. Allowed edit distance depends on input length: 0 under 5 characters, 1 for 5–9, 2 for 10 or more. Take the candidates with the lowest distance, then apply the resolution rule. Set `corrected_from` in the response.
+3. **Fuzzy match**, only if there was no exact hit, using a Levenshtein automaton over the FST. Allowed edit distance depends on input length: 0 under 5 characters, 1 for 5–9, 2 for 10 or more. Take the candidates with the lowest distance, then apply the resolution rule. Set `corrected_from` in the response. Swapping two adjacent letters counts as two edits by default; `fuzzy_transpositions` makes it one.
 4. **No match** → `not_found`.
 
 **Miss logging.** Every `not_found` and `ambiguous` verdict emits a structured `tracing` event with the normalized input. No database: a script over the logs ranks misses by frequency. That ranking is the evidence for deciding whether Phase 2 is needed.
@@ -215,7 +216,7 @@ Also required: property tests that normalization is idempotent, and a criterion 
 
 1. **Builder on the fixture.** `core` normalization, entity parser and classifier, artifact writer, `manifest.json` with counts. *Done.*
 2. **Builder on the full dump** (`en` + `mul`, `min_sitelinks` 1). Report entity counts by kind, name count, artifact size, build time, and peak memory. Decide from these whether to add languages or change the sitelink bar. This completes deliverable 1.
-3. **Matching.** Exact match, fuzzy match, the resolution rule, and `lookup --local`; all golden tests pass.
+3. **Matching.** Exact match, fuzzy match, the resolution rule, and `lookup --local`; all golden tests pass. *Done against the fixture; the miss-event half of the "Oh fuck off" case lands with milestone 4's logging.*
 4. **Server.** `serve` with HTTP API, health, metrics, miss logging; `lookup` against the server. This completes deliverable 2. Run real players' guesses through it and review the miss ranking to decide on Phase 2.
 
 **Open questions:**

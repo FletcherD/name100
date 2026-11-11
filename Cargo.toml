@@ -13,9 +13,11 @@ hundred-build = { path = "crates/build" }
 anyhow = "1"
 bzip2 = "0.5"
 caseless = "0.2"
+criterion = "0.5"
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 fst = "0.4"
+levenshtein_automata = { version = "0.2", features = ["fst_automaton"] }
 memmap2 = "0.9"
 proptest = "1"
 rayon = "1"

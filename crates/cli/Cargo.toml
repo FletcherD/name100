@@ -13,3 +13,13 @@ hundred-core.workspace = true
 hundred-build.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+fst.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "lookup"
+harness = false

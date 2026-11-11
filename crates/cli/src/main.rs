@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use hundred_build::{build_index, dump_date_from_path, open_dump, BuildOptions};
-use hundred_core::Manifest;
+use hundred_core::{Index, Manifest, MatchConfig, Matcher};
 
 /// Name 100 Women lookup server.
 #[derive(Parser)]
@@ -34,11 +34,27 @@ enum Command {
         #[arg(long)]
         dump_date: Option<String>,
     },
+    /// Decide whether a name is a real, notable woman.
+    ///
+    /// Exits 0 if accepted, 1 if rejected, 2 on error.
+    Lookup {
+        /// The name to look up.
+        name: String,
+        /// Look the name up in-process instead of asking a running server.
+        #[arg(long, requires = "index")]
+        local: bool,
+        /// Index directory, for --local.
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// Print the full JSON response instead of one line.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::from(2)
@@ -46,7 +62,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::BuildIndex { dump, out, langs, min_sitelinks, dump_date } => {
             let options = BuildOptions {
@@ -56,7 +72,20 @@ fn run(cli: Cli) -> Result<()> {
             };
             let manifest = build_index(open_dump(&dump)?, &out, &options)?;
             print_report(&manifest, &out);
-            Ok(())
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Lookup { name, local, index, json } => {
+            let (true, Some(index)) = (local, index) else {
+                bail!("lookup against a server is not built yet; use --local --index <dir>");
+            };
+            let matcher = Matcher::new(Index::open(&index)?, MatchConfig::default());
+            let response = matcher.lookup(&name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                println!("{}", response.summary_line());
+            }
+            Ok(if response.is_accepted() { ExitCode::SUCCESS } else { ExitCode::from(1) })
         }
     }
 }
