@@ -1,0 +1,375 @@
+# English Wikipedia titles fetched into fixtures/sample.ndjson by scripts/fetch_fixture.py.
+# One title per line. Lines starting with # are comments.
+
+# --- golden cases ---
+Billie Eilish
+Miley Cyrus
+Kamala Harris
+Hillary Clinton
+Caitlyn Jenner
+Beyoncé
+Madonna
+Cher
+Ruth Bader Ginsburg
+Lady Gaga
+Elon Musk
+Hermione Granger
+
+# --- Jennifers ---
+Jennifer Lopez
+Jennifer Aniston
+Jennifer Lawrence
+Jennifer Garner
+Jennifer Hudson
+Jennifer Connelly
+Jennifer Coolidge
+Jennifer Love Hewitt
+Jennifer Saunders
+Jennifer Doudna
+Jennifer Granholm
+Jennifer Capriati
+Jennifer Jason Leigh
+Jennifer Grey
+Jennifer Tilly
+Jennifer Beals
+Jennifer Egan
+Jennifer Morrison
+Jennifer Carpenter
+Jennifer Paige
+Jennifer Rush
+Jennifer Warnes
+Jennifer Holliday
+Jennifer Jones
+Jennifer Ehle
+
+# --- women: music ---
+Taylor Swift
+Rihanna
+Adele
+Ariana Grande
+Dua Lipa
+Shakira
+Britney Spears
+Christina Aguilera
+Mariah Carey
+Whitney Houston
+Aretha Franklin
+Tina Turner
+Dolly Parton
+Celine Dion
+Katy Perry
+Nicki Minaj
+Cardi B
+Lizzo
+Olivia Rodrigo
+Selena Gomez
+Demi Lovato
+Alicia Keys
+Janet Jackson
+Stevie Nicks
+Joni Mitchell
+Patti Smith
+Nina Simone
+Ella Fitzgerald
+Billie Holiday
+Amy Winehouse
+Björk
+Sade (singer)
+Enya
+Lorde
+Pink (singer)
+Kesha
+Sia
+Dido (singer)
+Shania Twain
+Avril Lavigne
+Gwen Stefani
+Janis Joplin
+Édith Piaf
+Maria Callas
+Barbra Streisand
+Bette Midler
+Diana Ross
+Donna Summer
+Kylie Minogue
+Missy Elliott
+Lauryn Hill
+Sinéad O'Connor
+Dolores O'Riordan
+Madonna (art)
+Selena
+Rosalía
+Zendaya
+
+# --- women: film and TV ---
+Meryl Streep
+Scarlett Johansson
+Angelina Jolie
+Julia Roberts
+Nicole Kidman
+Cate Blanchett
+Kate Winslet
+Emma Watson
+Emma Stone
+Emma Thompson
+Natalie Portman
+Sandra Bullock
+Reese Witherspoon
+Viola Davis
+Halle Berry
+Lupita Nyong'o
+Margot Robbie
+Anne Hathaway
+Audrey Hepburn
+Katharine Hepburn
+Marilyn Monroe
+Elizabeth Taylor
+Grace Kelly
+Judi Dench
+Helen Mirren
+Maggie Smith
+Oprah Winfrey
+Ellen DeGeneres
+Tina Fey
+Amy Poehler
+Lucille Ball
+Greta Gerwig
+Sofia Coppola
+Kathryn Bigelow
+Michelle Yeoh
+Penélope Cruz
+Salma Hayek
+Charlize Theron
+Uma Thurman
+Sigourney Weaver
+Jodie Foster
+Laverne Cox
+Elliot Page
+Kim Kardashian
+Paris Hilton
+
+# --- women: politics and history ---
+Michelle Obama
+Angela Merkel
+Margaret Thatcher
+Theresa May
+Jacinda Ardern
+Indira Gandhi
+Benazir Bhutto
+Golda Meir
+Nancy Pelosi
+Alexandria Ocasio-Cortez
+Elizabeth Warren
+Condoleezza Rice
+Madeleine Albright
+Sonia Sotomayor
+Sandra Day O'Connor
+Eleanor Roosevelt
+Jacqueline Kennedy Onassis
+Elizabeth II
+Elizabeth I
+Queen Victoria
+Diana, Princess of Wales
+Catherine the Great
+Cleopatra
+Joan of Arc
+Marie Antoinette
+Mary, Queen of Scots
+Anne Boleyn
+Harriet Tubman
+Rosa Parks
+Sojourner Truth
+Susan B. Anthony
+Emmeline Pankhurst
+Malala Yousafzai
+Greta Thunberg
+Mother Teresa
+Florence Nightingale
+Anne Frank
+Helen Keller
+Amelia Earhart
+Pocahontas
+Sacagawea
+Ursula von der Leyen
+Giorgia Meloni
+Claudia Sheinbaum
+Sanna Marin
+Aung San Suu Kyi
+Ellen Johnson Sirleaf
+
+# --- women: science, writing, art, sport ---
+Marie Curie
+Ada Lovelace
+Rosalind Franklin
+Grace Hopper
+Jane Goodall
+Katherine Johnson
+Sally Ride
+Valentina Tereshkova
+Rachel Carson
+Hedy Lamarr
+Lise Meitner
+Emmy Noether
+Dorothy Hodgkin
+Barbara McClintock
+Jane Austen
+Virginia Woolf
+Mary Shelley
+Emily Dickinson
+Charlotte Brontë
+Emily Brontë
+Agatha Christie
+J. K. Rowling
+Toni Morrison
+Maya Angelou
+Margaret Atwood
+Sylvia Plath
+Simone de Beauvoir
+Hannah Arendt
+Harper Lee
+Louisa May Alcott
+George Eliot
+Ursula K. Le Guin
+Chimamanda Ngozi Adichie
+Frida Kahlo
+Georgia O'Keeffe
+Yayoi Kusama
+Coco Chanel
+Serena Williams
+Venus Williams
+Simone Biles
+Billie Jean King
+Martina Navratilova
+Steffi Graf
+Naomi Osaka
+Megan Rapinoe
+Nadia Comăneci
+Lindsey Vonn
+Ronda Rousey
+Danica Patrick
+Katie Ledecky
+Allyson Felix
+Florence Griffith Joyner
+Marta (footballer)
+Alexia Putellas
+
+# --- men (rejections and confusable neighbours) ---
+Barack Obama
+Donald Trump
+Joe Biden
+Bill Clinton
+George Washington
+Abraham Lincoln
+Winston Churchill
+Albert Einstein
+Isaac Newton
+Charles Darwin
+Stephen Hawking
+Nikola Tesla
+Steve Jobs
+Bill Gates
+Jeff Bezos
+Mark Zuckerberg
+Michael Jackson
+Elvis Presley
+Prince (musician)
+David Bowie
+Bob Dylan
+John Lennon
+Paul McCartney
+Freddie Mercury
+Elton John
+Kanye West
+Drake (musician)
+Eminem
+Jay-Z
+Justin Bieber
+Harry Styles
+Ed Sheeran
+Bruno Mars
+Leonardo DiCaprio
+Brad Pitt
+Tom Hanks
+Tom Cruise
+Morgan Freeman
+Denzel Washington
+Will Smith
+Johnny Depp
+Keanu Reeves
+Robert De Niro
+Lionel Messi
+Cristiano Ronaldo
+Michael Jordan
+LeBron James
+Muhammad Ali
+Roger Federer
+Usain Bolt
+Tiger Woods
+William Shakespeare
+Charles Dickens
+Mark Twain
+Ernest Hemingway
+Leonardo da Vinci
+Pablo Picasso
+Vincent van Gogh
+Napoleon
+Julius Caesar
+Mahatma Gandhi
+Nelson Mandela
+Martin Luther King Jr.
+Finneas O'Connell
+Billy Ray Cyrus
+Doug Emhoff
+Sonny Bono
+Martin D. Ginsburg
+Allen Ginsberg
+Kimbal Musk
+Jay Leno
+Evelyn Waugh
+Sam Smith
+Leslie Nielsen
+Ashley Cole
+Robin Williams
+Lindsey Graham
+Kris Jenner
+Kendall Jenner
+Kylie Jenner
+Chelsea Clinton
+George Clinton (funk musician)
+Maya Harris
+Kamala Khan
+Rajiv Gandhi
+Pierre Curie
+Irène Joliot-Curie
+Venus (mythology)
+Harry Styles
+
+# --- fictional ---
+Harry Potter (character)
+Ron Weasley
+Sherlock Holmes
+James Bond
+Wonder Woman
+Lara Croft
+Katniss Everdeen
+Princess Leia
+Elizabeth Bennet
+Jane Eyre (character)
+Daenerys Targaryen
+Arya Stark
+Buffy Summers
+Ellen Ripley
+Lisa Simpson
+Marge Simpson
+Homer Simpson
+Carrie Bradshaw
+Bridget Jones
+Mary Poppins (character)
+Nancy Drew
+Scarlett O'Hara
+Lisbeth Salander
+Black Widow (Marvel Comics)
+Batman
+Darth Vader
+Dana Scully
+Leslie Knope

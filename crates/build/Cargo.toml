@@ -1,0 +1,19 @@
+[package]
+name = "hundred-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hundred-core.workspace = true
+anyhow.workspace = true
+bzip2.workspace = true
+flate2.workspace = true
+fst.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

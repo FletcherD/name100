@@ -1,0 +1,15 @@
+[package]
+name = "hundred-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hundred"
+path = "src/main.rs"
+
+[dependencies]
+hundred-core.workspace = true
+hundred-build.workspace = true
+anyhow.workspace = true
+clap.workspace = true
