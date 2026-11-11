@@ -1,15 +1,26 @@
-use std::path::PathBuf;
-use std::process::ExitCode;
+mod config;
 
-use anyhow::{bail, Result};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use hundred_build::{build_index, dump_date_from_path, open_dump, BuildOptions};
-use hundred_core::{Index, Manifest, MatchConfig, Matcher};
+use hundred_core::{Index, Manifest, Matcher, Response};
+use hundred_server::App;
+
+use config::Config;
 
 /// Name 100 Women lookup server.
 #[derive(Parser)]
 #[command(name = "hundred", version)]
 struct Cli {
+    /// Config file. Defaults to ./hundred.toml if it exists. Every key can
+    /// also be set as HUNDRED_<KEY> in the environment.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -24,27 +35,40 @@ enum Command {
         /// Directory to write the artifact into.
         #[arg(long)]
         out: PathBuf,
-        /// Languages whose labels and aliases are indexed.
-        #[arg(long, value_delimiter = ',', default_value = "en,mul")]
-        langs: Vec<String>,
-        /// Minimum number of Wikipedia articles for a person to be kept.
-        #[arg(long, default_value_t = 1)]
-        min_sitelinks: u32,
+        /// Languages whose labels and aliases are indexed [default: en,mul].
+        #[arg(long, value_delimiter = ',')]
+        langs: Option<Vec<String>>,
+        /// Minimum number of Wikipedia articles for a person to be kept [default: 1].
+        #[arg(long)]
+        min_sitelinks: Option<u32>,
         /// Dump date (YYYY-MM-DD) for the manifest. Defaults to the date in the dump's filename.
         #[arg(long)]
         dump_date: Option<String>,
     },
+    /// Load an index and serve lookups over HTTP.
+    Serve {
+        /// Index directory to serve.
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// Address to listen on [default: 127.0.0.1:8080].
+        #[arg(long)]
+        bind: Option<String>,
+    },
     /// Decide whether a name is a real, notable woman.
     ///
+    /// Asks a running server, or with --local looks the name up in-process.
     /// Exits 0 if accepted, 1 if rejected, 2 on error.
     Lookup {
         /// The name to look up.
         name: String,
-        /// Look the name up in-process instead of asking a running server.
-        #[arg(long, requires = "index")]
+        /// Server to ask.
+        #[arg(long, default_value = "http://127.0.0.1:8080", conflicts_with = "local")]
+        server: String,
+        /// Look the name up in-process instead of asking a server.
+        #[arg(long)]
         local: bool,
         /// Index directory, for --local.
-        #[arg(long)]
+        #[arg(long, requires = "local")]
         index: Option<PathBuf>,
         /// Print the full JSON response instead of one line.
         #[arg(long)]
@@ -63,23 +87,31 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
+    let config = Config::load(cli.config.as_deref())?;
     match cli.command {
         Command::BuildIndex { dump, out, langs, min_sitelinks, dump_date } => {
             let options = BuildOptions {
-                langs,
-                min_sitelinks,
+                langs: langs.unwrap_or_else(|| config.langs.clone()),
+                min_sitelinks: min_sitelinks.unwrap_or(config.min_sitelinks),
                 dump_date: dump_date.or_else(|| dump_date_from_path(&dump)),
             };
             let manifest = build_index(open_dump(&dump)?, &out, &options)?;
             print_report(&manifest, &out);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Lookup { name, local, index, json } => {
-            let (true, Some(index)) = (local, index) else {
-                bail!("lookup against a server is not built yet; use --local --index <dir>");
+        Command::Serve { index, bind } => {
+            let index = index_path(index, &config)?;
+            let bind = bind.unwrap_or_else(|| config.bind.clone());
+            serve(&index, &bind, &config)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Lookup { name, server, local, index, json } => {
+            let response = if local {
+                let index = Index::open(&index_path(index, &config)?)?;
+                Matcher::new(index, config.matching()).lookup(&name)?
+            } else {
+                ask_server(&server, &name)?
             };
-            let matcher = Matcher::new(Index::open(&index)?, MatchConfig::default());
-            let response = matcher.lookup(&name)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else {
@@ -90,7 +122,84 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
-fn print_report(manifest: &Manifest, out: &std::path::Path) {
+fn index_path(flag: Option<PathBuf>, config: &Config) -> Result<PathBuf> {
+    flag.or_else(|| config.index.clone())
+        .ok_or_else(|| anyhow!("no index given: pass --index <dir> or set `index` in the config"))
+}
+
+fn serve(index_path: &Path, bind: &str, config: &Config) -> Result<()> {
+    // JSON logs on stdout; RUST_LOG adjusts the level.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().json().with_env_filter(filter).with_writer(std::io::stdout).init();
+
+    let started = Instant::now();
+    let index = Index::open(index_path)?;
+    let manifest = index.manifest().clone();
+    let app = App::new(Matcher::new(index, config.matching()));
+    tracing::info!(
+        index = %index_path.display(),
+        records = manifest.counts.records,
+        names = manifest.counts.names,
+        build_date = %manifest.build_date,
+        load_ms = started.elapsed().as_millis() as u64,
+        "index loaded"
+    );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("binding {bind}"))?;
+        let address = listener.local_addr()?;
+        // Plain line on stderr, so scripts can find the port when binding to :0.
+        eprintln!("hundred: listening on http://{address}");
+        tracing::info!(%address, "listening");
+        app.serve(listener, shutdown_signal()).await?;
+        tracing::info!("shut down");
+        Ok(())
+    })
+}
+
+/// Resolves on Ctrl-C or SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
+fn ask_server(server: &str, name: &str) -> Result<Response> {
+    let url = format!("{}/v1/lookup", server.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let reply = client
+        .get(&url)
+        .query(&[("q", name)])
+        .send()
+        .with_context(|| format!("could not reach the server at {server} (is `hundred serve` running?)"))?;
+    let status = reply.status();
+    if !status.is_success() {
+        bail!("server at {server} answered {status}: {}", reply.text().unwrap_or_default().trim());
+    }
+    reply.json().with_context(|| format!("unexpected response from {server}"))
+}
+
+fn print_report(manifest: &Manifest, out: &Path) {
     let c = &manifest.counts;
     let s = &manifest.sizes;
     let mb = |bytes: u64| bytes as f64 / 1e6;

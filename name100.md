@@ -118,7 +118,7 @@ Each lookup normalizes the input, then runs these stages in order and stops at t
 
 1. **Input guard.** Reject empty input, input over 100 characters, or input with no letters, as `not_a_name`.
 2. **Exact match** against all indexed labels and aliases. Get the posting list and apply the resolution rule below.
-3. **Fuzzy match**, only if there was no exact hit, using a Levenshtein automaton over the FST. Allowed edit distance depends on input length: 0 under 5 characters, 1 for 5–9, 2 for 10 or more. Take the candidates with the lowest distance, then apply the resolution rule. Set `corrected_from` in the response. Swapping two adjacent letters counts as two edits by default; `fuzzy_transpositions` makes it one.
+3. **Fuzzy match**, only if there was no exact hit, using a Levenshtein automaton over the FST. Allowed edit distance depends on input length: 0 under 5 characters, 1 for 5–9, 2 for 10 or more. Take the candidates with the lowest distance, then apply the resolution rule. Set `corrected_from` in the response. Swapping two adjacent letters counts as one edit (`fuzzy_transpositions`, on by default), since swaps are the most common typing error.
 4. **No match** → `not_found`.
 
 **Miss logging.** Every `not_found` and `ambiguous` verdict emits a structured `tracing` event with the normalized input. No database: a script over the logs ranks misses by frequency. That ranking is the evidence for deciding whether Phase 2 is needed.
@@ -139,7 +139,7 @@ If the chosen record's kind is `not_woman` or `fictional`, return that rejection
 
 **Endpoints:**
 
-- `GET /v1/lookup?q=<name>` → verdict JSON (below). Always HTTP 200 for a verdict, including rejections; 400 for a missing `q`.
+- `GET /v1/lookup?q=<name>` → verdict JSON (below). Always HTTP 200 for a verdict, including rejections; 400 with `{"error": ...}` for a missing `q`.
 - `GET /healthz` → 200 with the loaded index's `manifest.json`.
 - `GET /metrics` → Prometheus text.
 
@@ -189,9 +189,9 @@ hundred lookup "<name>" --local --index <dir>      # in-process, no server
 
 ## Config, testing, and milestones
 
-**Config.** `hundred.toml`, every key overridable by a `HUNDRED_*` environment variable. Keys: index path, bind address, `dominance_ratio`, `mononym_min_sitelinks`, fuzzy distance thresholds, indexed languages.
+**Config.** `hundred.toml` (read from the working directory, or `--config <file>`), every key overridable by a `HUNDRED_<KEY>` environment variable. Flags beat the environment, which beats the file. Keys: `index`, `bind`, `langs`, `min_sitelinks`, `dominance_ratio`, `mononym_min_sitelinks`, `fuzzy_one_edit_min_len`, `fuzzy_two_edits_min_len`, `fuzzy_transpositions`, `max_input_chars`, `max_candidates`. Unknown keys are an error. `hundred.example.toml` lists them with their defaults.
 
-**Observability.** Use `tracing` with JSON logs, including the miss events above. Export counters for lookups by `matched_via` and verdict, plus a latency histogram per stage.
+**Observability.** `serve` writes JSON logs to stdout, including the miss events above (target `hundred::miss`, fields `reason` and `normalized`); `scripts/rank_misses.py` ranks them. `/metrics` exports `hundred_lookups_total` by `verdict`, `reason` and `matched_via`, and the histograms `hundred_lookup_seconds` and `hundred_lookup_stage_seconds` (by `stage`: guard, exact, fuzzy, resolve).
 
 **Golden tests** (run against the fixture):
 
@@ -217,7 +217,7 @@ Also required: property tests that normalization is idempotent, and a criterion 
 1. **Builder on the fixture.** `core` normalization, entity parser and classifier, artifact writer, `manifest.json` with counts. *Done.*
 2. **Builder on the full dump** (`en` + `mul`, `min_sitelinks` 1). Report entity counts by kind, name count, artifact size, build time, and peak memory. Decide from these whether to add languages or change the sitelink bar. This completes deliverable 1.
 3. **Matching.** Exact match, fuzzy match, the resolution rule, and `lookup --local`; all golden tests pass. *Done against the fixture; the miss-event half of the "Oh fuck off" case lands with milestone 4's logging.*
-4. **Server.** `serve` with HTTP API, health, metrics, miss logging; `lookup` against the server. This completes deliverable 2. Run real players' guesses through it and review the miss ranking to decide on Phase 2.
+4. **Server.** `serve` with HTTP API, health, metrics, miss logging; `lookup` against the server. This completes deliverable 2. *Built and tested against the fixture.* Run real players' guesses through it and review the miss ranking to decide on Phase 2.
 
 **Open questions:**
 

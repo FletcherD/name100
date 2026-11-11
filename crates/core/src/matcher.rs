@@ -1,6 +1,6 @@
 //! The lookup pipeline: input guard, exact match, fuzzy match, resolution.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fst::{IntoStreamer, Streamer};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder};
@@ -26,7 +26,8 @@ pub struct MatchConfig {
     pub fuzzy_one_edit_min_len: usize,
     /// Shortest normalized input, in characters, that may be off by two edits.
     pub fuzzy_two_edits_min_len: usize,
-    /// Count swapping two adjacent letters as one edit instead of two.
+    /// Count swapping two adjacent letters as one edit instead of two. On by
+    /// default: swaps are the most common typing error.
     pub fuzzy_transpositions: bool,
     /// Longest accepted input, in characters.
     pub max_input_chars: usize,
@@ -41,7 +42,7 @@ impl Default for MatchConfig {
             mononym_min_sitelinks: 40,
             fuzzy_one_edit_min_len: 5,
             fuzzy_two_edits_min_len: 10,
-            fuzzy_transpositions: false,
+            fuzzy_transpositions: true,
             max_input_chars: 100,
             max_candidates: 5,
         }
@@ -58,6 +59,31 @@ impl MatchConfig {
         } else {
             0
         }
+    }
+}
+
+/// Time spent in each stage of one lookup. A stage that did not run is `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageTimings {
+    /// Input guard and normalization.
+    pub guard: Duration,
+    pub exact: Option<Duration>,
+    pub fuzzy: Option<Duration>,
+    /// The resolution rule and reading the chosen records.
+    pub resolve: Option<Duration>,
+}
+
+impl StageTimings {
+    /// Each stage that ran, with its name.
+    pub fn stages(&self) -> impl Iterator<Item = (&'static str, Duration)> {
+        [
+            ("guard", Some(self.guard)),
+            ("exact", self.exact),
+            ("fuzzy", self.fuzzy),
+            ("resolve", self.resolve),
+        ]
+        .into_iter()
+        .filter_map(|(name, time)| Some((name, time?)))
     }
 }
 
@@ -96,13 +122,24 @@ impl Matcher {
     ///
     /// Errors only if the index files are corrupt.
     pub fn lookup(&self, input: &str) -> Result<Response, IndexError> {
-        let started = Instant::now();
-        let mut response = self.run(input)?;
-        response.latency_us = started.elapsed().as_micros() as u64;
-        Ok(response)
+        self.lookup_timed(input).map(|(response, _)| response)
     }
 
-    fn run(&self, input: &str) -> Result<Response, IndexError> {
+    /// [`Matcher::lookup`], also reporting where the time went.
+    pub fn lookup_timed(&self, input: &str) -> Result<(Response, StageTimings), IndexError> {
+        let started = Instant::now();
+        let mut timings = StageTimings::default();
+        let mut response = self.run(input, started, &mut timings)?;
+        response.latency_us = started.elapsed().as_micros() as u64;
+        Ok((response, timings))
+    }
+
+    fn run(
+        &self,
+        input: &str,
+        started: Instant,
+        timings: &mut StageTimings,
+    ) -> Result<Response, IndexError> {
         let mut response = Response {
             input: input.to_owned(),
             normalized: String::new(),
@@ -117,40 +154,56 @@ impl Matcher {
         };
 
         // 1. Input guard. Over-long input is not even normalized.
-        if input.chars().count() > self.config.max_input_chars
-            || !input.chars().any(char::is_alphabetic)
-        {
-            return Ok(response);
+        let is_candidate = input.chars().count() <= self.config.max_input_chars
+            && input.chars().any(char::is_alphabetic);
+        if is_candidate {
+            response.normalized = normalize(input);
         }
-        response.normalized = normalize(input);
+        timings.guard = started.elapsed();
         if response.normalized.is_empty() {
             return Ok(response);
         }
 
         // 2. Exact match, then 3. fuzzy match only if nothing matched exactly.
-        let (records, via) = match self.exact(&response.normalized) {
+        let stage = Instant::now();
+        let exact = self.exact(&response.normalized);
+        timings.exact = Some(stage.elapsed());
+        let (records, via) = match exact {
             Stage::Hit(records) => (records, MatchedVia::Exact),
-            Stage::Miss => match self.fuzzy(&response.normalized) {
-                Stage::Hit(records) => (records, MatchedVia::Fuzzy),
-                Stage::Miss => {
-                    // 4. No match.
-                    response.reason = Some(Reason::NotFound);
-                    return Ok(response);
+            Stage::Miss => {
+                let stage = Instant::now();
+                let fuzzy = self.fuzzy(&response.normalized);
+                timings.fuzzy = Some(stage.elapsed());
+                match fuzzy {
+                    Stage::Hit(records) => (records, MatchedVia::Fuzzy),
+                    Stage::Miss => {
+                        // 4. No match.
+                        response.reason = Some(Reason::NotFound);
+                        return Ok(response);
+                    }
                 }
-            },
+            }
         };
         response.matched_via = Some(via);
         if via == MatchedVia::Fuzzy {
             response.corrected_from = Some(response.normalized.clone());
         }
 
+        let stage = Instant::now();
+        let outcome = self.decide(&records, &mut response);
+        timings.resolve = Some(stage.elapsed());
+        outcome.map(|()| response)
+    }
+
+    /// Apply the resolution rule to `records` and fill in the verdict.
+    fn decide(&self, records: &[u32], response: &mut Response) -> Result<(), IndexError> {
         let single_word = !response.normalized.contains(' ');
-        let Some(chosen) = self.resolve(&records, single_word) else {
+        let Some(chosen) = self.resolve(records, single_word) else {
             response.reason = Some(Reason::Ambiguous);
             for &record in records.iter().take(self.config.max_candidates) {
                 response.candidates.push(self.person(record)?.0);
             }
-            return Ok(response);
+            return Ok(());
         };
 
         let (person, genders) = self.person(chosen)?;
@@ -166,7 +219,7 @@ impl Matcher {
             }
         }
         response.matched = Some(person);
-        Ok(response)
+        Ok(())
     }
 
     fn exact(&self, normalized: &str) -> Stage {

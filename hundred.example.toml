@@ -1,0 +1,32 @@
+# Copy to hundred.toml (read from the working directory) or pass --config <file>.
+# Every key can also be set in the environment as HUNDRED_<KEY>, for example
+# HUNDRED_BIND=0.0.0.0:8080. Flags beat the environment, which beats this file.
+# The values below are the defaults.
+
+# Index directory for `serve` and `lookup --local`. No default.
+# index = "index/full"
+
+# Address `serve` listens on.
+bind = "127.0.0.1:8080"
+
+# --- build-index ---
+# Languages whose labels and aliases are indexed.
+langs = ["en", "mul"]
+# Fewest Wikipedia articles a person needs to be kept.
+min_sitelinks = 1
+
+# --- matching ---
+# A shared name resolves to its most famous bearer only if they have at least
+# this many times the runner-up's sitelinks.
+dominance_ratio = 3.0
+# Sitelinks needed before a single-word name ("Madonna") resolves to someone.
+mononym_min_sitelinks = 40
+# Shortest input, in characters, allowed one typo; and two typos.
+fuzzy_one_edit_min_len = 5
+fuzzy_two_edits_min_len = 10
+# Count two swapped neighbouring letters as one typo.
+fuzzy_transpositions = true
+# Longest input looked up at all.
+max_input_chars = 100
+# Most people listed for an ambiguous name.
+max_candidates = 5

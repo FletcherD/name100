@@ -178,7 +178,7 @@ fn fuzzy_distance_depends_on_length() {
     assert_rejected("Chir", Reason::NotFound);
     // 5 to 9 characters: one edit.
     assert_eq!(qid(&assert_accepted("Madona", MatchedVia::Fuzzy)), "Q1744");
-    assert_rejected("Madnoa", Reason::NotFound);
+    assert_rejected("Maddona", Reason::NotFound);
     // 10 or more: two edits.
     assert_eq!(qid(&assert_accepted("Hilary Clintom", MatchedVia::Fuzzy)), qid(&lookup("Hillary Clinton")));
     assert_rejected("Hilary Klintom", Reason::NotFound);
@@ -235,10 +235,13 @@ fn dominance_ratio_and_mononym_threshold_are_configurable() {
 }
 
 #[test]
-fn transpositions_can_count_as_one_edit() {
-    assert_rejected("Madnona", Reason::NotFound);
-    let swaps = matcher_with(MatchConfig { fuzzy_transpositions: true, ..Default::default() });
-    assert!(swaps.lookup("Madnona").unwrap().is_accepted());
+fn swapped_letters_count_as_one_edit_unless_turned_off() {
+    let response = assert_accepted("Madnona", MatchedVia::Fuzzy);
+    assert_eq!(qid(&response), "Q1744");
+    assert_eq!(qid(&assert_accepted("Biliie Eilish", MatchedVia::Fuzzy)), qid(&lookup("Billie Eilish")));
+
+    let strict = matcher_with(MatchConfig { fuzzy_transpositions: false, ..Default::default() });
+    assert_eq!(strict.lookup("Madnona").unwrap().reason, Some(Reason::NotFound));
 }
 
 #[test]

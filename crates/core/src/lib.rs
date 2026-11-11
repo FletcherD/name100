@@ -13,6 +13,6 @@ pub use attribute::{Attribute, Attributes};
 pub use artifact::{ColdRecord, Counts, HotRecord, Kind, Manifest, Sizes};
 pub use gender::{describe_genders, gender_label, WOMAN_GENDERS};
 pub use index::{Hits, Index, IndexError};
-pub use matcher::{MatchConfig, Matcher};
+pub use matcher::{MatchConfig, Matcher, StageTimings};
 pub use normalize::normalize;
 pub use verdict::{Match, MatchedVia, Reason, Response, Verdict};
